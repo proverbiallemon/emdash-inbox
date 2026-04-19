@@ -31,3 +31,6 @@ yarn-debug.log*
 
 # Claude Code local config (per-dev, not for upstream)
 .claude/
+
+# EmDash plugin validator temp output
+.emdash-bundle-tmp/

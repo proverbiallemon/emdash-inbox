@@ -17,7 +17,6 @@ export function emdashInboxPlugin(): PluginDescriptor {
 
 /**
  * Plugin definition — runs on the deployed server at request time.
- * Receives full `ctx` access based on declared capabilities.
  *
  * Roadmap:
  *   M1 — claim `email:provide`; register `email:deliver` hook that ships via
@@ -34,33 +33,62 @@ export function createPlugin() {
 		id: "emdash-inbox",
 		version: "0.1.0",
 
-		// TODO M1: claim capabilities
-		//   "email:provide"     — become the transport (registers email:deliver)
-		//   "email:intercept"   — log outbound sent by any plugin
-		//   "read:content"      — link messages to content records
-		//   "read:users"        — user lookups
-		//   "network:fetch"     — carrier tracking APIs, etc.
-		capabilities: [],
-
-		// TODO M1: allowedHosts for tracking-lookup APIs
-		allowedHosts: [],
-
-		// TODO M2: declare storage collections
-		//   messages, contacts, bundles, reminders, links
-		storage: {},
+		capabilities: [
+			// We deliver email for the whole EmDash instance — anything that calls
+			// ctx.email.send() routes through our email:deliver hook below.
+			"email:provide",
+			// We also log every outbound message so it shows up in the inbox UI.
+			"email:intercept",
+		],
 
 		hooks: {
 			"plugin:install": async (_event, ctx) => {
 				ctx.log.info("emdash-inbox installed");
 				// TODO M2: seed default bundles (Orders, Shipping, Promos, Fans, Shows)
 			},
-			// TODO M1: "email:deliver" — ship outbound via Cloudflare Email Service
-			// TODO M1: "email:afterSend" — record every sent message in inbox storage
+
+			/**
+			 * Exclusive provider hook — runs exactly once per outbound email,
+			 * regardless of which plugin called ctx.email.send().
+			 *
+			 * TODO M1: actually deliver via the Cloudflare Email Service binding.
+			 *   Pseudocode:
+			 *     const sendEmail = (ctx as any).env?.SEND_EMAIL;  // resolve binding
+			 *     await sendEmail.send(new EmailMessage(from, event.message.to, raw));
+			 *
+			 *   Blockers to resolve:
+			 *     1. How a plugin accesses the host's Cloudflare env bindings —
+			 *        not yet exposed on ctx in EmDash v0.5.0.
+			 *     2. The raw MIME-formatted RFC822 body that Cloudflare's
+			 *        SendEmail expects (need to build from event.message).
+			 *     3. The verified sender address — comes from plugin settings,
+			 *        configured via admin.settingsSchema.
+			 */
+			"email:deliver": async (event, ctx) => {
+				ctx.log.info("email:deliver (stub)", {
+					to: event.message.to,
+					subject: event.message.subject,
+					source: event.source,
+				});
+				// Until the binding is wired, this is a no-op.
+				// Host-side unit tests will skip send assertions until M1 lands fully.
+			},
+
+			/**
+			 * Observer hook — runs after every outbound send succeeds.
+			 * TODO M2: persist to ctx.storage.messages as outbound record.
+			 */
+			"email:afterSend": async (event, ctx) => {
+				ctx.log.debug("email:afterSend", {
+					to: event.message.to,
+					subject: event.message.subject,
+					source: event.source,
+				});
+			},
 		},
 
-		routes: {
-			// TODO M2: messages list / send / pin / snooze / done / attachments
-		},
+		// TODO M2: declare storage collections
+		//   messages, contacts, bundles, reminders, links
 
 		// TODO M1–M2:
 		// admin: {
@@ -73,6 +101,9 @@ export function createPlugin() {
 		//   widgets: [
 		//     { id: "inbox-unread", title: "Inbox", size: "half" },
 		//   ],
+		//   settingsSchema: {
+		//     senderAddress: { type: "string", label: "Sender address (verified in CF Email)" },
+		//   },
 		// },
 	});
 }
