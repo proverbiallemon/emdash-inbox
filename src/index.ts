@@ -15,18 +15,24 @@ export function emdashInboxPlugin(): PluginDescriptor {
 	};
 }
 
+const SETTINGS = {
+	accountId: "settings:accountId",
+	apiToken: "settings:apiToken",
+	senderAddress: "settings:senderAddress",
+} as const;
+
+const CF_SEND_ENDPOINT = (accountId: string) =>
+	`https://api.cloudflare.com/client/v4/accounts/${accountId}/email/sending/send`;
+
 /**
  * Plugin definition — runs on the deployed server at request time.
  *
- * Roadmap:
- *   M1 — claim `email:provide`; register `email:deliver` hook that ships via
- *        the Cloudflare Email Service binding. Prove outbound works end-to-end.
- *   M2 — inbound handler (Cloudflare Email Worker → ctx.storage.messages);
- *        basic list-view admin page.
- *   M3 — Inbox-by-Google UX (pin / snooze / done, card-based list).
- *   M4 — bundle classification (Orders, Shipping, Commissions, Fans, Promos).
- *   M5 — highlights (structured fields surfaced as inline cards).
- *   M6 — reminders + content linking + MCP extension.
+ * Transport choice: we POST to the Cloudflare Email Service REST API rather
+ * than binding `env.SEND_EMAIL`. EmDash v0.5.0's plugin context does not
+ * expose host Cloudflare env bindings to hooks, so the REST path (token in
+ * `ctx.kv` + `ctx.http.fetch`) is the only way for a plugin to deliver via
+ * CF Email Service today. Swapping to the binding later is a single-site
+ * change in the `email:deliver` handler.
  */
 export function createPlugin() {
 	return definePlugin({
@@ -34,51 +40,83 @@ export function createPlugin() {
 		version: "0.1.0",
 
 		capabilities: [
-			// We deliver email for the whole EmDash instance — anything that calls
-			// ctx.email.send() routes through our email:deliver hook below.
 			"email:provide",
-			// We also log every outbound message so it shows up in the inbox UI.
 			"email:intercept",
+			"network:fetch",
 		],
+
+		allowedHosts: ["api.cloudflare.com"],
 
 		hooks: {
 			"plugin:install": async (_event, ctx) => {
 				ctx.log.info("emdash-inbox installed");
-				// TODO M2: seed default bundles (Orders, Shipping, Promos, Fans, Shows)
 			},
 
-			/**
-			 * Exclusive provider hook — runs exactly once per outbound email,
-			 * regardless of which plugin called ctx.email.send().
-			 *
-			 * TODO M1: actually deliver via the Cloudflare Email Service binding.
-			 *   Pseudocode:
-			 *     const sendEmail = (ctx as any).env?.SEND_EMAIL;  // resolve binding
-			 *     await sendEmail.send(new EmailMessage(from, event.message.to, raw));
-			 *
-			 *   Blockers to resolve:
-			 *     1. How a plugin accesses the host's Cloudflare env bindings —
-			 *        not yet exposed on ctx in EmDash v0.5.0.
-			 *     2. The raw MIME-formatted RFC822 body that Cloudflare's
-			 *        SendEmail expects (need to build from event.message).
-			 *     3. The verified sender address — comes from plugin settings,
-			 *        configured via admin.settingsSchema.
-			 */
-			"email:deliver": async (event, ctx) => {
-				ctx.log.info("email:deliver (stub)", {
+			"email:deliver": {
+				exclusive: true,
+				handler: async (event, ctx) => {
+				if (!ctx.http) {
+					throw new Error(
+						"emdash-inbox: ctx.http unavailable — network:fetch capability not granted",
+					);
+				}
+
+				const [accountId, apiToken, senderAddress] = await Promise.all([
+					ctx.kv.get<string>(SETTINGS.accountId),
+					ctx.kv.get<string>(SETTINGS.apiToken),
+					ctx.kv.get<string>(SETTINGS.senderAddress),
+				]);
+
+				const missing: string[] = [];
+				if (!accountId) missing.push("accountId");
+				if (!apiToken) missing.push("apiToken");
+				if (!senderAddress) missing.push("senderAddress");
+				if (missing.length > 0) {
+					throw new Error(
+						`emdash-inbox: cannot deliver email — missing settings: ${missing.join(", ")}. Configure in Admin → emdash-inbox → Settings.`,
+					);
+				}
+
+				const payload: Record<string, unknown> = {
+					to: event.message.to,
+					from: senderAddress,
+					subject: event.message.subject,
+					text: event.message.text,
+				};
+				if (event.message.html) payload.html = event.message.html;
+
+				const response = await ctx.http.fetch(CF_SEND_ENDPOINT(accountId!), {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${apiToken}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(payload),
+				});
+
+				if (!response.ok) {
+					const body = await response.text();
+					ctx.log.error("emdash-inbox: CF Email Service rejected send", {
+						status: response.status,
+						body,
+						to: event.message.to,
+						source: event.source,
+					});
+					throw new Error(
+						`emdash-inbox: CF Email Service returned ${response.status}`,
+					);
+				}
+
+				ctx.log.info("emdash-inbox: delivered", {
 					to: event.message.to,
 					subject: event.message.subject,
 					source: event.source,
 				});
-				// Until the binding is wired, this is a no-op.
-				// Host-side unit tests will skip send assertions until M1 lands fully.
+				},
 			},
 
-			/**
-			 * Observer hook — runs after every outbound send succeeds.
-			 * TODO M2: persist to ctx.storage.messages as outbound record.
-			 */
 			"email:afterSend": async (event, ctx) => {
+				// M2: persist to ctx.storage.messages as outbound record for inbox UI.
 				ctx.log.debug("email:afterSend", {
 					to: event.message.to,
 					subject: event.message.subject,
@@ -87,24 +125,30 @@ export function createPlugin() {
 			},
 		},
 
-		// TODO M2: declare storage collections
-		//   messages, contacts, bundles, reminders, links
-
-		// TODO M1–M2:
-		// admin: {
-		//   entry: "emdash-inbox/admin",
-		//   pages: [
-		//     { path: "/", label: "Inbox", icon: "inbox" },
-		//     { path: "/reminders", label: "Reminders", icon: "bell" },
-		//     { path: "/settings", label: "Settings", icon: "settings" },
-		//   ],
-		//   widgets: [
-		//     { id: "inbox-unread", title: "Inbox", size: "half" },
-		//   ],
-		//   settingsSchema: {
-		//     senderAddress: { type: "string", label: "Sender address (verified in CF Email)" },
-		//   },
-		// },
+		admin: {
+			// settingsSchema defaults are not materialized automatically by EmDash;
+			// the hook above validates presence at send time and throws if missing.
+			settingsSchema: {
+				accountId: {
+					type: "string",
+					label: "Cloudflare account ID",
+					description:
+						"Find this in your Cloudflare dashboard URL or on the account home page.",
+				},
+				apiToken: {
+					type: "secret",
+					label: "Cloudflare API token (Email Sending scope)",
+					description:
+						"Create at dash.cloudflare.com → My Profile → API Tokens → Create Token, with permission: Account → Email Sending → Send.",
+				},
+				senderAddress: {
+					type: "string",
+					label: "Verified sender address",
+					description:
+						"Must be a sender you have verified in Cloudflare Email Service (e.g. hello@yourdomain.com).",
+				},
+			},
+		},
 	});
 }
 

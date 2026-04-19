@@ -24,15 +24,20 @@
 	},
 	"type": "module",
 	"exports": {
-		".": "./src/index.ts"
+		".": {
+			"types": "./dist/index.d.mts",
+			"default": "./dist/index.mjs"
+		}
 	},
 	"files": [
+		"dist",
 		"src",
 		"LICENSE",
 		"NOTICE",
 		"README.md"
 	],
 	"scripts": {
+		"build": "tsdown src/index.ts --format esm --dts --out-dir dist",
 		"typecheck": "tsc --noEmit",
 		"validate": "emdash plugin validate --dir ."
 	},
