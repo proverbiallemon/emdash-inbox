@@ -12,6 +12,8 @@ export function emdashInboxPlugin(): PluginDescriptor {
 		version: "0.1.0",
 		format: "native",
 		entrypoint: "emdash-inbox",
+		adminEntry: "emdash-inbox/admin",
+		adminPages: [{ path: "/", label: "Inbox", icon: "envelope" }],
 		options: {},
 	};
 }
@@ -318,6 +320,16 @@ export function createPlugin() {
 		},
 
 		routes: {
+			"messages/list": {
+				handler: async (routeCtx) => {
+					const result = await (routeCtx.storage as any).messages.query({
+						orderBy: { receivedAt: "desc" },
+						limit: 100,
+					});
+					return { items: result.items, cursor: result.cursor };
+				},
+			},
+
 			inbound: {
 				public: true,
 				handler: async (routeCtx) => {
@@ -374,6 +386,7 @@ export function createPlugin() {
 		},
 
 		admin: {
+			pages: [{ path: "/", label: "Inbox", icon: "envelope" }],
 			// settingsSchema defaults are not materialized automatically by EmDash;
 			// the hook above validates presence at send time and throws if missing.
 			settingsSchema: {
