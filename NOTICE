@@ -1,0 +1,11 @@
+emdash-inbox
+Copyright 2026 PBWeb LLC
+
+This product includes patterns and approaches informed by SaasMail
+(https://github.com/choyiny/saasmail, Apache License 2.0) — particularly
+around Cloudflare Email Workers inbound handling, MIME parsing, and
+the rich-text composer. Where specific code is adapted, the source file
+is noted in comments.
+
+This product is designed to run as a plugin for EmDash CMS
+(https://github.com/emdash-cms/emdash).

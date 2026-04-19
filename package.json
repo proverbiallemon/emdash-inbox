@@ -1,0 +1,38 @@
+{
+	"name": "emdash-inbox",
+	"version": "0.1.0",
+	"description": "Cloudflare Email Service transport and Inbox-by-Google-style mailbox UI for EmDash CMS",
+	"keywords": [
+		"emdash",
+		"emdash-plugin",
+		"cms",
+		"email",
+		"inbox",
+		"mailbox",
+		"cloudflare",
+		"cloudflare-workers",
+		"cloudflare-email"
+	],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/proverbiallemon/emdash-inbox.git"
+	},
+	"homepage": "https://github.com/proverbiallemon/emdash-inbox#readme",
+	"bugs": {
+		"url": "https://github.com/proverbiallemon/emdash-inbox/issues"
+	},
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"files": [
+		"src",
+		"LICENSE",
+		"NOTICE",
+		"README.md"
+	],
+	"peerDependencies": {
+		"emdash": "*"
+	}
+}
