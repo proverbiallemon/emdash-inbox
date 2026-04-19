@@ -1,0 +1,14 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "emdash-inbox-ingest",
+	"main": "./index.ts",
+	"compatibility_date": "2026-02-24",
+	"vars": {
+		"INBOUND_URL": "https://yoursite.example.com/_emdash/api/plugins/emdash-inbox/inbound"
+	}
+	// INBOUND_SECRET should be set as a secret, not a plain var:
+	//   wrangler secret put INBOUND_SECRET
+	//
+	// Domain email routing is configured in the Cloudflare dashboard, not here:
+	//   Email → Email Routing → Routes → "Send to a Worker" → emdash-inbox-ingest
+}

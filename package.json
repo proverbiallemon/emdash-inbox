@@ -48,5 +48,8 @@
 		"emdash": "^0.5.0",
 		"tsdown": "^0.21.9",
 		"typescript": "^6.0.3"
+	},
+	"dependencies": {
+		"postal-mime": "^2.7.4"
 	}
 }

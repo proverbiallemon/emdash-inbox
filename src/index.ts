@@ -1,5 +1,6 @@
-import { definePlugin } from "emdash";
+import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
+import PostalMime from "postal-mime";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -19,6 +20,7 @@ const SETTINGS = {
 	accountId: "settings:accountId",
 	apiToken: "settings:apiToken",
 	senderAddress: "settings:senderAddress",
+	inboundSecret: "settings:inboundSecret",
 } as const;
 
 const CF_SEND_ENDPOINT = (accountId: string) =>
@@ -125,6 +127,61 @@ async function persistOutbound(
 				outboundCount: 1,
 			};
 	await ctx.storage.contacts.put(contactId, contact);
+}
+
+async function persistInbound(
+	ctx: any,
+	rawMime: string,
+): Promise<{ msgId: string; from: string }> {
+	const parsed = await PostalMime.parse(rawMime);
+	const now = new Date().toISOString();
+	const msgId = crypto.randomUUID();
+	const fromAddr = parsed.from?.address ?? "(unknown)";
+	const fromName = parsed.from?.name ?? null;
+	const toAddr = parsed.to?.[0]?.address ?? "(unknown)";
+
+	const msg: MessageDoc = {
+		messageId: parsed.messageId ?? `<${msgId}@emdash-inbox.local>`,
+		direction: "inbound",
+		from: fromAddr,
+		to: toAddr,
+		subject: parsed.subject ?? "(no subject)",
+		bodyText: parsed.text ?? "",
+		bodyHtml: parsed.html ?? null,
+		bodyRaw: rawMime,
+		threadId: null,
+		receivedAt: now,
+		source: "inbound",
+		status: "inbox",
+		pinned: false,
+		bundleId: null,
+	};
+	await ctx.storage.messages.put(msgId, msg);
+
+	const contactId = fromAddr.trim().toLowerCase();
+	const existing = (await ctx.storage.contacts.get(contactId)) as
+		| ContactDoc
+		| null;
+	const contact: ContactDoc = existing
+		? {
+				...existing,
+				name: existing.name ?? fromName,
+				lastContactAt: now,
+				messageCount: existing.messageCount + 1,
+				inboundCount: existing.inboundCount + 1,
+			}
+		: {
+				email: fromAddr,
+				name: fromName,
+				firstSeenAt: now,
+				lastContactAt: now,
+				messageCount: 1,
+				inboundCount: 1,
+				outboundCount: 0,
+			};
+	await ctx.storage.contacts.put(contactId, contact);
+
+	return { msgId, from: fromAddr };
 }
 
 /**
@@ -260,6 +317,62 @@ export function createPlugin() {
 			},
 		},
 
+		routes: {
+			inbound: {
+				public: true,
+				handler: async (routeCtx) => {
+					const expected = await routeCtx.kv.get<string>(
+						SETTINGS.inboundSecret,
+					);
+					if (!expected) {
+						throw PluginRouteError.internal(
+							"inbound endpoint not configured — set settings:inboundSecret",
+						);
+					}
+					// X-Inbound-Secret header (not Authorization/Bearer — emdash's auth
+					// middleware claims Bearer globally, even for public plugin routes).
+					const provided = routeCtx.request.headers.get("x-inbound-secret") ?? "";
+					if (provided !== expected) {
+						throw PluginRouteError.unauthorized();
+					}
+
+					// emdash's dispatcher pre-parses the body as JSON (even for empty/
+					// non-JSON content). We can't re-read request.text() because the
+					// body stream is already consumed. So the protocol is: POST JSON
+					// `{ "rawMime": "<RFC822>" }`. The email Worker that forwards
+					// inbound mail is responsible for wrapping the raw MIME in that
+					// envelope.
+					const input = routeCtx.input as { rawMime?: unknown } | null;
+					const rawMime = input?.rawMime;
+					if (typeof rawMime !== "string" || rawMime.length === 0) {
+						throw PluginRouteError.badRequest(
+							"body must be JSON with a non-empty `rawMime` string field",
+						);
+					}
+
+					try {
+						const { msgId, from } = await persistInbound(
+							routeCtx as any,
+							rawMime,
+						);
+						routeCtx.log.info("emdash-inbox: inbound persisted", {
+							msgId,
+							from,
+						});
+						return { ok: true, id: msgId };
+					} catch (err) {
+						if (err instanceof PluginRouteError) throw err;
+						routeCtx.log.error("emdash-inbox: inbound parse/persist failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+						throw PluginRouteError.badRequest(
+							"failed to parse or persist MIME",
+						);
+					}
+				},
+			},
+		},
+
 		admin: {
 			// settingsSchema defaults are not materialized automatically by EmDash;
 			// the hook above validates presence at send time and throws if missing.
@@ -281,6 +394,12 @@ export function createPlugin() {
 					label: "Verified sender address",
 					description:
 						"Must be a sender you have verified in Cloudflare Email Service (e.g. hello@yourdomain.com).",
+				},
+				inboundSecret: {
+					type: "secret",
+					label: "Inbound webhook shared secret",
+					description:
+						"Arbitrary string. Configured also on your Cloudflare Email Worker (sent as the X-Inbound-Secret header) so only that worker can POST to the inbound endpoint.",
 				},
 			},
 		},
