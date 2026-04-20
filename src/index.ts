@@ -356,11 +356,42 @@ export function createPlugin() {
 		routes: {
 			"messages/list": {
 				handler: async (routeCtx) => {
-					const result = await (routeCtx.storage as any).messages.query({
-						orderBy: { receivedAt: "desc" },
-						limit: 100,
+					const input = routeCtx.input as
+						| { status?: unknown; limit?: unknown; cursor?: unknown }
+						| null;
+
+					const filter =
+						input?.status === "snoozed" || input?.status === "done" || input?.status === "all"
+							? input.status
+							: "inbox";
+					const limit = typeof input?.limit === "number" ? input.limit : 100;
+					const cursor = typeof input?.cursor === "string" ? input.cursor : undefined;
+
+					const sortField = filter === "snoozed" ? "snoozeUntil" : "sortAt";
+					const sortDir: "asc" | "desc" = filter === "snoozed" ? "asc" : "desc";
+
+					const query: any = {
+						orderBy: { [sortField]: sortDir },
+						limit,
+						cursor,
+					};
+					if (filter !== "all") {
+						query.where = { status: filter };
+					}
+
+					const result = await (routeCtx.storage as any).messages.query(query);
+
+					// Post-sort: pinned rows first within the already-sorted list. EmDash
+					// storage doesn't currently support composite orderBy, so we do this
+					// client-side against the limit-sized window — fine for pre-alpha
+					// volumes; revisit if inbox grows beyond a few thousand rows.
+					const items = [...result.items].sort((a: any, b: any) => {
+						if (a.data.pinned && !b.data.pinned) return -1;
+						if (!a.data.pinned && b.data.pinned) return 1;
+						return 0;
 					});
-					return { items: result.items, cursor: result.cursor };
+
+					return { items, cursor: result.cursor };
 				},
 			},
 
