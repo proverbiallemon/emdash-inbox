@@ -1,6 +1,7 @@
 import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
+import { validateTransition } from "./lib/statusTransitions";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -382,6 +383,53 @@ export function createPlugin() {
 						pinned,
 					});
 					return { ok: true };
+				},
+			},
+
+			"messages/status": {
+				handler: async (routeCtx) => {
+					const input = routeCtx.input as
+						| { id?: unknown; status?: unknown; snoozeUntil?: unknown }
+						| null;
+
+					const id = typeof input?.id === "string" ? input.id : null;
+					const status = input?.status;
+					const snoozeUntil =
+						typeof input?.snoozeUntil === "string" ? input.snoozeUntil : undefined;
+
+					if (!id || (status !== "inbox" && status !== "snoozed" && status !== "done")) {
+						throw PluginRouteError.badRequest(
+							"body must include id:string and status:'inbox'|'snoozed'|'done'",
+						);
+					}
+
+					const row = await (routeCtx.storage as any).messages.get(id);
+					if (!row) {
+						throw PluginRouteError.notFound(`message ${id} not found`);
+					}
+
+					const check = validateTransition(row.status, status, snoozeUntil);
+					if (!check.ok) {
+						throw PluginRouteError.badRequest(check.error);
+					}
+
+					const now = new Date().toISOString();
+					const next = { ...row };
+
+					if (status === "inbox") {
+						next.status = "inbox";
+						next.sortAt = now;
+						next.snoozeUntil = null;
+					} else if (status === "snoozed") {
+						next.status = "snoozed";
+						next.snoozeUntil = snoozeUntil!;
+					} else if (status === "done") {
+						next.status = "done";
+						next.snoozeUntil = null;
+					}
+
+					await (routeCtx.storage as any).messages.put(id, next);
+					return { ok: true, status: next.status };
 				},
 			},
 
