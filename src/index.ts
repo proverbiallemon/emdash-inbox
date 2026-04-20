@@ -363,6 +363,28 @@ export function createPlugin() {
 				},
 			},
 
+			"messages/pin": {
+				handler: async (routeCtx) => {
+					const input = routeCtx.input as { id?: unknown; pinned?: unknown } | null;
+					const id = typeof input?.id === "string" ? input.id : null;
+					const pinned = typeof input?.pinned === "boolean" ? input.pinned : null;
+					if (!id || pinned === null) {
+						throw PluginRouteError.badRequest(
+							"body must include id:string and pinned:boolean",
+						);
+					}
+					const row = await (routeCtx.storage as any).messages.get(id);
+					if (!row) {
+						throw PluginRouteError.notFound(`message ${id} not found`);
+					}
+					await (routeCtx.storage as any).messages.put(id, {
+						...row,
+						pinned,
+					});
+					return { ok: true };
+				},
+			},
+
 			inbound: {
 				public: true,
 				handler: async (routeCtx) => {
