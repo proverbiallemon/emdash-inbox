@@ -69,6 +69,11 @@ export interface MessageDoc {
 	pinned: boolean;
 	/** M4. Null until the bundle classifier runs. */
 	bundleId: string | null;
+	/** ISO8601. Drives inbox sort order. Equals receivedAt on create;
+	 *  updated to wake-time when a snoozed message resurfaces. */
+	sortAt: string;
+	/** ISO8601. Only meaningful when status === "snoozed". Null otherwise. */
+	snoozeUntil: string | null;
 }
 
 export interface ContactDoc {
@@ -105,6 +110,8 @@ async function persistOutbound(
 		status: "done",
 		pinned: false,
 		bundleId: null,
+		sortAt: now,
+		snoozeUntil: null,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -157,6 +164,8 @@ async function persistInbound(
 		status: "inbox",
 		pinned: false,
 		bundleId: null,
+		sortAt: now,
+		snoozeUntil: null,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -213,6 +222,8 @@ export function createPlugin() {
 			messages: {
 				indexes: [
 					"receivedAt",
+					"sortAt",
+					"snoozeUntil",
 					"threadId",
 					"status",
 					"pinned",
@@ -229,6 +240,28 @@ export function createPlugin() {
 		hooks: {
 			"plugin:install": async (_event, ctx) => {
 				ctx.log.info("emdash-inbox installed");
+			},
+
+			"plugin:activate": async (_event, ctx) => {
+				// Backfill sortAt/snoozeUntil on any M2 rows. Pre-alpha data volumes are
+				// tiny; a full scan is fine here. Idempotent — skips rows already migrated.
+				// Lives in plugin:activate (not plugin:install) because install only fires
+				// on first-ever install; activate re-fires on upgrade, which is what we need
+				// for M2→M3 sites.
+				const all = await (ctx.storage as any).messages.query({ limit: 10000 });
+				let migrated = 0;
+				for (const row of all.items as { id: string; data: any }[]) {
+					if (row.data.sortAt && row.data.snoozeUntil !== undefined) continue;
+					await (ctx.storage as any).messages.put(row.id, {
+						...row.data,
+						sortAt: row.data.sortAt ?? row.data.receivedAt,
+						snoozeUntil: row.data.snoozeUntil ?? null,
+					});
+					migrated++;
+				}
+				if (migrated > 0) {
+					ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
+				}
 			},
 
 			"email:deliver": {
