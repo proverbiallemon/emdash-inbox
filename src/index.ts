@@ -263,6 +263,45 @@ export function createPlugin() {
 				if (migrated > 0) {
 					ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
 				}
+
+				// Schedule the snooze-wake cron. ctx.cron.schedule is an upsert-by-name
+				// (backed by the _emdash_cron_tasks table) so calling it on every activate
+				// is safe and idempotent. The `cron` field is typed as optional on
+				// PluginContext but the EmDash runtime always provides it for plugins
+				// (the types comment says "always available on plugin context, scoped to
+				// plugin") — hence the non-null assertion.
+				await ctx.cron!.schedule("wake-snoozed-messages", {
+					schedule: "*/5 * * * *",
+				});
+			},
+
+			"cron": async (event, ctx) => {
+				if (event.name !== "wake-snoozed-messages") return;
+
+				const now = new Date().toISOString();
+
+				const due = await (ctx.storage as any).messages.query({
+					where: { status: "snoozed" },
+					limit: 500,
+				});
+
+				let woken = 0;
+				for (const row of due.items as { id: string; data: any }[]) {
+					if (!row.data.snoozeUntil) continue;
+					if (row.data.snoozeUntil > now) continue;
+
+					await (ctx.storage as any).messages.put(row.id, {
+						...row.data,
+						status: "inbox",
+						sortAt: now,
+						snoozeUntil: null,
+					});
+					woken++;
+				}
+
+				if (woken > 0) {
+					ctx.log.info("emdash-inbox: woke snoozed messages", { woken });
+				}
 			},
 
 			"email:deliver": {
