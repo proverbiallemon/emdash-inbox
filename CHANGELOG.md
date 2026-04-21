@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-04-20
+
+### Added
+
+- Message detail view. Clicking a card in the inbox list navigates to
+  `?message=<id>`, replacing the list with a full-page `ThreadView` that
+  renders every message in the thread (chronological order). Back
+  navigation returns to the previously active filter tab.
+- Threading at ingest. Inbound messages derive `threadId` and
+  `inReplyTo` from RFC 5322 `In-Reply-To` and `References` headers;
+  outbound messages accept an optional `inReplyTo` at send-time and
+  resolve their `threadId` the same way. Messages without a parent seed
+  a new thread whose `threadId == messageId`.
+- `ctx.email.send()` gains an optional `inReplyTo?: string` field. The
+  `email:deliver` hook passes it through as the `In-Reply-To` header to
+  Cloudflare Email Service, letting callers build reply chains against
+  arbitrary parent Message-IDs.
+- HTML body rendering. Multipart inbound now renders sanitized HTML via
+  DOMPurify — `<script>` / event handlers / `javascript:` URLs
+  stripped; external `<img>` sources blocked by default with a
+  per-message "Show images" reveal; every `<a>` annotated with
+  `rel="noopener noreferrer nofollow"`. Plain-text-only messages fall
+  back to `<pre style="white-space: pre-wrap">`.
+- Thread-level bulk actions. Pin / done / snooze buttons at the top of
+  the thread view apply to every message in the thread via client-side
+  N-way fan-out against the existing per-message routes; optimistic UI
+  with rollback on partial failure.
+- Two new pure-logic modules with vitest coverage — `threadDerive` (7
+  tests: parent-lookup, References fallback, self-threading seed,
+  malformed-header tolerance) and `sanitize` (9 tests: script
+  stripping, image gating, link rel, plain-text wrapping).
+- `ensureM3Setup` renamed to `ensureMigrations`; gains pass 2 (threadId
+  backfill for pre-M4 rows) and pass 3 (orphan retry — replies whose
+  parent was processed later in the same scan get linked on the second
+  pass).
+- New plugin route `messages/thread` — admin-auth-gated, returns every
+  message in a thread by `threadId`, sorted by `receivedAt` ascending.
+- One new runtime dep: `dompurify@^3.4.0`.
+
+### Deferred to M5+
+
+Reply / compose UI, thread-grouping in the inbox list (currently every
+message is a standalone card), the reminders collection, toast-based
+undo, bundles + AI sort, iframe sandboxing for HTML bodies, quote
+stripping in replies, per-message-in-thread actions (only thread-level
+actions for now), and References-chain building on outbound sends.
+
 ## [0.3.0] — 2026-04-20
 
 ### Added

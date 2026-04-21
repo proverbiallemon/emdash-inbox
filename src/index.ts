@@ -2,6 +2,7 @@ import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
+import { deriveThreadInfo } from "./lib/threadDerive";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -10,7 +11,7 @@ import { validateTransition } from "./lib/statusTransitions";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.3.0",
+		version: "0.4.0",
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -75,6 +76,12 @@ export interface MessageDoc {
 	sortAt: string;
 	/** ISO8601. Only meaningful when status === "snoozed". Null otherwise. */
 	snoozeUntil: string | null;
+	/** Parent message's RFC 5322 Message-ID (angle-bracketed). Null when this
+	 *  message starts a thread. Set at ingest from the In-Reply-To header
+	 *  (inbound) or from the caller's inReplyTo field (outbound). Preserved
+	 *  even when parent lookup fails, so the orphan-retry backfill pass can
+	 *  retry linkage later. */
+	inReplyTo: string | null;
 }
 
 export interface ContactDoc {
@@ -89,15 +96,44 @@ export interface ContactDoc {
 
 async function persistOutbound(
 	ctx: any,
-	event: { message: { to: string; subject: string; text: string; html?: string }; source: string },
+	event: {
+		message: {
+			to: string;
+			subject: string;
+			text: string;
+			html?: string;
+			inReplyTo?: string;
+		};
+		source: string;
+	},
 	senderAddress: string,
 ): Promise<void> {
 	const now = new Date().toISOString();
 	const msgId = crypto.randomUUID();
 	const senderDomain = senderAddress.split("@")[1] ?? "emdash-inbox.local";
+	const messageId = `<${msgId}@${senderDomain}>`;
+
+	// Derive threadId from inReplyTo (if caller provided).
+	const inReplyToHeader = event.message.inReplyTo ?? null;
+	let derivedThreadId = messageId;
+	let derivedInReplyTo: string | null = null;
+	if (inReplyToHeader) {
+		const hit = await (ctx.storage as any).messages.query({
+			where: { messageId: inReplyToHeader },
+			limit: 1,
+		});
+		const parent = hit.items?.[0];
+		const lookup = (id: string) =>
+			parent && parent.data.messageId === id
+				? { messageId: parent.data.messageId, threadId: parent.data.threadId ?? null }
+				: null;
+		const derived = deriveThreadInfo(messageId, inReplyToHeader, [], lookup);
+		derivedThreadId = derived.threadId;
+		derivedInReplyTo = derived.inReplyTo;
+	}
 
 	const msg: MessageDoc = {
-		messageId: `<${msgId}@${senderDomain}>`,
+		messageId,
 		direction: "outbound",
 		from: senderAddress,
 		to: event.message.to,
@@ -105,7 +141,7 @@ async function persistOutbound(
 		bodyText: event.message.text,
 		bodyHtml: event.message.html ?? null,
 		bodyRaw: null,
-		threadId: null,
+		threadId: derivedThreadId,
 		receivedAt: now,
 		source: event.source,
 		status: "done",
@@ -113,6 +149,7 @@ async function persistOutbound(
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
+		inReplyTo: derivedInReplyTo,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -168,27 +205,140 @@ async function persistOutbound(
  * grow into the tens of thousands, gate with a kv "m3:migrated" flag so the
  * scan runs once per worker instead of per-request.
  */
-async function ensureM3Setup(ctx: any): Promise<void> {
+async function ensureMigrations(ctx: any): Promise<void> {
 	const all = await ctx.storage.messages.query({ limit: 10000 });
-	let migrated = 0;
-	for (const row of all.items as { id: string; data: any }[]) {
+	const rows = all.items as { id: string; data: any }[];
+
+	// --- Pass 1: sortAt / snoozeUntil (M3) ---
+	let pass1 = 0;
+	for (const row of rows) {
 		if (row.data.sortAt && row.data.snoozeUntil !== undefined) continue;
 		await ctx.storage.messages.put(row.id, {
 			...row.data,
 			sortAt: row.data.sortAt ?? row.data.receivedAt,
 			snoozeUntil: row.data.snoozeUntil ?? null,
 		});
-		migrated++;
+		pass1++;
 	}
-	if (migrated > 0) {
-		ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
+	if (pass1 > 0) ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated: pass1 });
+
+	// Re-query so pass 2 sees the pass-1 writes.
+	const afterPass1 = await ctx.storage.messages.query({ limit: 10000 });
+	const freshRows = afterPass1.items as { id: string; data: any }[];
+
+	// Build a lookup by messageId for pass 2 + pass 3.
+	const byMessageId = new Map<string, { messageId: string; threadId: string | null }>();
+	for (const r of freshRows) {
+		byMessageId.set(r.data.messageId, {
+			messageId: r.data.messageId,
+			threadId: r.data.threadId ?? null,
+		});
+	}
+	const lookup = (msgId: string) => byMessageId.get(msgId) ?? null;
+
+	// --- Pass 2: threadId derivation (M4) ---
+	let pass2 = 0;
+	for (const row of freshRows) {
+		if (row.data.threadId) continue;
+
+		// Parse In-Reply-To + References from bodyRaw if we have it.
+		let inReplyToHeader: string | null = null;
+		let references: string[] = [];
+		if (row.data.bodyRaw) {
+			// Simple header scan. Full MIME re-parse via postal-mime is overkill for
+			// a header grep; bodyRaw has the original raw text.
+			inReplyToHeader = parseHeader(row.data.bodyRaw, "In-Reply-To");
+			const refsRaw = parseHeader(row.data.bodyRaw, "References");
+			if (refsRaw) references = refsRaw.split(/\s+/).filter(Boolean);
+		}
+		// Outbound rows don't have bodyRaw but might have data.inReplyTo already
+		// if they were written by a future persistOutbound that we haven't shipped
+		// yet. Prefer the explicit field when present.
+		if (!inReplyToHeader && row.data.inReplyTo) {
+			inReplyToHeader = row.data.inReplyTo;
+		}
+
+		const derived = deriveThreadInfo(
+			row.data.messageId,
+			inReplyToHeader,
+			references,
+			lookup,
+		);
+
+		await ctx.storage.messages.put(row.id, {
+			...row.data,
+			threadId: derived.threadId,
+			inReplyTo: derived.inReplyTo,
+		});
+
+		// Update our in-memory lookup so later rows in the same pass can resolve
+		// ancestors that were just processed.
+		byMessageId.set(row.data.messageId, {
+			messageId: row.data.messageId,
+			threadId: derived.threadId,
+		});
+		pass2++;
+	}
+	if (pass2 > 0) ctx.log.info("emdash-inbox: backfilled threadId", { migrated: pass2 });
+
+	// --- Pass 3: orphan retry (handles reply-before-parent in pass 2) ---
+	if (pass2 > 0) {
+		const afterPass2 = await ctx.storage.messages.query({ limit: 10000 });
+		let pass3 = 0;
+		for (const row of afterPass2.items as { id: string; data: any }[]) {
+			if (row.data.threadId !== row.data.messageId) continue;
+			if (!row.data.inReplyTo) continue;
+
+			const parent = byMessageId.get(row.data.inReplyTo);
+			if (!parent) continue;
+			const inheritedThreadId = parent.threadId ?? parent.messageId;
+			if (inheritedThreadId === row.data.threadId) continue;
+
+			await ctx.storage.messages.put(row.id, {
+				...row.data,
+				threadId: inheritedThreadId,
+			});
+			byMessageId.set(row.data.messageId, {
+				messageId: row.data.messageId,
+				threadId: inheritedThreadId,
+			});
+			pass3++;
+		}
+		if (pass3 > 0) ctx.log.info("emdash-inbox: orphan-retry linked threads", { migrated: pass3 });
 	}
 
+	// --- Cron schedule (M3; unchanged) ---
 	if (ctx.cron) {
 		await ctx.cron.schedule("wake-snoozed-messages", {
 			schedule: "*/5 * * * *",
 		});
 	}
+}
+
+/**
+ * Extract a single header value from raw RFC 822 text. Case-insensitive.
+ * Handles folded continuations (RFC 5322 §2.2.3) by joining continuation
+ * lines that start with whitespace. Returns trimmed value or null.
+ */
+function parseHeader(raw: string, name: string): string | null {
+	const lines = raw.split(/\r?\n/);
+	const prefix = name.toLowerCase() + ":";
+	let found: string | null = null;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].toLowerCase().startsWith(prefix)) {
+			let value = lines[i].slice(prefix.length).trim();
+			// Fold continuation lines.
+			while (i + 1 < lines.length && /^\s/.test(lines[i + 1])) {
+				value += " " + lines[i + 1].trim();
+				i++;
+			}
+			found = value;
+			break;
+		}
+		// Headers end at the first blank line.
+		if (lines[i] === "") break;
+	}
+	return found;
 }
 
 async function persistInbound(
@@ -201,9 +351,47 @@ async function persistInbound(
 	const fromAddr = parsed.from?.address ?? "(unknown)";
 	const fromName = parsed.from?.name ?? null;
 	const toAddr = parsed.to?.[0]?.address ?? "(unknown)";
+	const messageId = parsed.messageId ?? `<${msgId}@emdash-inbox.local>`;
+
+	// Derive threadId from headers. postal-mime types `inReplyTo` as a single
+	// Message-ID string and `references` as a space-separated string (per
+	// RFC 5322). Tolerate array form too in case the parser shape shifts.
+	const inReplyToHeader = parsed.inReplyTo ?? null;
+	const rawRefs: unknown = parsed.references;
+	const references: string[] = Array.isArray(rawRefs)
+		? (rawRefs as string[])
+		: typeof rawRefs === "string"
+			? rawRefs.split(/\s+/).filter(Boolean)
+			: [];
+
+	const lookup = async (msgIdToFind: string) => {
+		const hit = await (ctx.storage as any).messages.query({
+			where: { messageId: msgIdToFind },
+			limit: 1,
+		});
+		const row = hit.items?.[0];
+		return row
+			? { messageId: row.data.messageId, threadId: row.data.threadId ?? null }
+			: null;
+	};
+
+	// deriveThreadInfo is sync; run the lookups first and cache a tiny map
+	// over just the candidates.
+	const candidates = new Set<string>();
+	if (inReplyToHeader) candidates.add(inReplyToHeader);
+	for (const r of references) candidates.add(r);
+
+	const parents = new Map<string, { messageId: string; threadId: string | null }>();
+	for (const c of candidates) {
+		const p = await lookup(c);
+		if (p) parents.set(c, p);
+	}
+	const syncLookup = (id: string) => parents.get(id) ?? null;
+
+	const derived = deriveThreadInfo(messageId, inReplyToHeader, references, syncLookup);
 
 	const msg: MessageDoc = {
-		messageId: parsed.messageId ?? `<${msgId}@emdash-inbox.local>`,
+		messageId,
 		direction: "inbound",
 		from: fromAddr,
 		to: toAddr,
@@ -211,7 +399,7 @@ async function persistInbound(
 		bodyText: parsed.text ?? "",
 		bodyHtml: parsed.html ?? null,
 		bodyRaw: rawMime,
-		threadId: null,
+		threadId: derived.threadId,
 		receivedAt: now,
 		source: "inbound",
 		status: "inbox",
@@ -219,6 +407,7 @@ async function persistInbound(
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
+		inReplyTo: derived.inReplyTo,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -261,7 +450,7 @@ async function persistInbound(
 export function createPlugin() {
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.3.0",
+		version: "0.4.0",
 
 		capabilities: [
 			"email:provide",
@@ -293,11 +482,11 @@ export function createPlugin() {
 		hooks: {
 			"plugin:install": async (_event, ctx) => {
 				ctx.log.info("emdash-inbox installed");
-				await ensureM3Setup(ctx);
+				await ensureMigrations(ctx);
 			},
 
 			"plugin:activate": async (_event, ctx) => {
-				await ensureM3Setup(ctx);
+				await ensureMigrations(ctx);
 			},
 
 			"cron": async (event, ctx) => {
@@ -361,6 +550,11 @@ export function createPlugin() {
 						text: event.message.text,
 					};
 					if (event.message.html) payload.html = event.message.html;
+					if ((event.message as any).inReplyTo) {
+						payload.headers = {
+							"In-Reply-To": (event.message as any).inReplyTo,
+						};
+					}
 
 					const response = await ctx.http.fetch(CF_SEND_ENDPOINT(accountId!), {
 						method: "POST",
@@ -423,7 +617,7 @@ export function createPlugin() {
 					// Lazy setup: EmDash v0.5.0 config-registered plugins don't fire
 					// plugin:install/activate at boot, so this is our only guaranteed
 					// hook for upgrade-time migrations and cron registration. Idempotent.
-					await ensureM3Setup(routeCtx);
+					await ensureMigrations(routeCtx);
 
 					const input = routeCtx.input as
 						| { status?: unknown; limit?: unknown; cursor?: unknown }
@@ -530,6 +724,32 @@ export function createPlugin() {
 
 					await (routeCtx.storage as any).messages.put(id, next);
 					return { ok: true, status: next.status };
+				},
+			},
+
+			"messages/thread": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+
+					const input = routeCtx.input as { id?: unknown } | null;
+					const id = typeof input?.id === "string" ? input.id : null;
+					if (!id) {
+						throw PluginRouteError.badRequest("body must include id:string");
+					}
+
+					const row = await (routeCtx.storage as any).messages.get(id);
+					if (!row) {
+						throw PluginRouteError.notFound(`message ${id} not found`);
+					}
+
+					const threadId = row.threadId ?? row.messageId;
+					const result = await (routeCtx.storage as any).messages.query({
+						where: { threadId },
+						orderBy: { receivedAt: "asc" },
+						limit: 500,
+					});
+
+					return { items: result.items };
 				},
 			},
 

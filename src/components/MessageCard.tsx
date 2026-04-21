@@ -20,6 +20,7 @@ export interface MessageCardRow {
 
 interface Props {
 	row: MessageCardRow;
+	onOpen: (id: string) => void;
 	onPinToggle: (id: string, nextPinned: boolean) => void;
 	onDone: (id: string) => void;
 	onSnoozeRequest: (id: string) => void;
@@ -46,19 +47,33 @@ function preview(text: string): string {
 	return oneLine.length > 80 ? oneLine.slice(0, 80) + "…" : oneLine;
 }
 
-export function MessageCard({ row, onPinToggle, onDone, onSnoozeRequest }: Props) {
+export function MessageCard({ row, onOpen, onPinToggle, onDone, onSnoozeRequest }: Props) {
 	const m = row.data;
 	const counterparty = m.direction === "inbound" ? m.from : `→ ${m.to}`;
 	const subject = m.subject || "(no subject)";
 
 	return (
-		<div className="group relative border rounded-lg pl-4 pr-3 py-3 bg-card hover:bg-muted/30 overflow-hidden">
+		<div
+			className="group relative border rounded-lg pl-4 pr-3 py-3 bg-card hover:bg-muted/30 overflow-hidden cursor-pointer"
+			role="button"
+			tabIndex={0}
+			onClick={() => onOpen(row.id)}
+			onKeyDown={(e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					onOpen(row.id);
+				}
+			}}
+		>
 			<span className={`absolute left-0 top-0 bottom-0 w-[3px] ${stripClass(m.direction, m.status)}`} />
 
 			<button
 				type="button"
 				className="absolute top-2 right-2 text-sm"
-				onClick={() => onPinToggle(row.id, !m.pinned)}
+				onClick={(e) => {
+					e.stopPropagation();
+					onPinToggle(row.id, !m.pinned);
+				}}
 				aria-label={m.pinned ? "Unpin" : "Pin"}
 				title={m.pinned ? "Pinned — click to unpin" : "Pin"}
 			>
@@ -80,14 +95,20 @@ export function MessageCard({ row, onPinToggle, onDone, onSnoozeRequest }: Props
 				<button
 					type="button"
 					className="text-[10px] px-2 py-0.5 border rounded hover:bg-muted"
-					onClick={() => onDone(row.id)}
+					onClick={(e) => {
+						e.stopPropagation();
+						onDone(row.id);
+					}}
 				>
 					✓ Done
 				</button>
 				<button
 					type="button"
 					className="text-[10px] px-2 py-0.5 border rounded hover:bg-muted"
-					onClick={() => onSnoozeRequest(row.id)}
+					onClick={(e) => {
+						e.stopPropagation();
+						onSnoozeRequest(row.id);
+					}}
 				>
 					⏰ Snooze
 				</button>

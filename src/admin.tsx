@@ -7,6 +7,7 @@ import { SnoozePicker } from "./components/SnoozePicker";
 import { DateBuckets } from "./components/DateBuckets";
 import { EmptyState } from "./components/EmptyState";
 import { SkeletonList } from "./components/SkeletonList";
+import { ThreadView } from "./components/ThreadView";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -15,53 +16,60 @@ function readStatusFromUrl(): StatusFilter {
 	return s === "snoozed" || s === "done" || s === "all" ? s : "inbox";
 }
 
+function readMessageFromUrl(): string | null {
+	return new URLSearchParams(window.location.search).get("message");
+}
+
 function readDebugFromUrl(): boolean {
 	return new URLSearchParams(window.location.search).get("debug") === "1";
 }
 
-function writeStatusToUrl(status: StatusFilter) {
+function writeUrl(status: StatusFilter, messageId: string | null) {
 	const url = new URL(window.location.href);
 	if (status === "inbox") url.searchParams.delete("status");
 	else url.searchParams.set("status", status);
+	if (messageId) url.searchParams.set("message", messageId);
+	else url.searchParams.delete("message");
 	window.history.replaceState({}, "", url.toString());
 }
 
 function InboxPage() {
 	const [status, setStatus] = React.useState<StatusFilter>(readStatusFromUrl);
+	const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(readMessageFromUrl);
 	const [rows, setRows] = React.useState<MessageCardRow[]>([]);
 	const [loading, setLoading] = React.useState(true);
 	const [error, setError] = React.useState<string | null>(null);
 	const [snoozingId, setSnoozingId] = React.useState<string | null>(null);
 	const debug = React.useMemo(readDebugFromUrl, []);
 
-	const refetch = React.useCallback(
-		async (forStatus: StatusFilter) => {
-			setLoading(true);
-			setError(null);
-			try {
-				const res = await apiFetch(`${API}/messages/list`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ status: forStatus }),
-				});
-				const data = await parseApiResponse<{ items: MessageCardRow[] }>(
-					res,
-					"Failed to load messages",
-				);
-				setRows(data.items);
-			} catch (err) {
-				setError(err instanceof Error ? err.message : String(err));
-			} finally {
-				setLoading(false);
-			}
-		},
-		[],
-	);
+	const refetch = React.useCallback(async (forStatus: StatusFilter) => {
+		setLoading(true);
+		setError(null);
+		try {
+			const res = await apiFetch(`${API}/messages/list`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ status: forStatus }),
+			});
+			const data = await parseApiResponse<{ items: MessageCardRow[] }>(
+				res,
+				"Failed to load messages",
+			);
+			setRows(data.items);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setLoading(false);
+		}
+	}, []);
 
 	React.useEffect(() => {
-		writeStatusToUrl(status);
-		void refetch(status);
-	}, [status, refetch]);
+		writeUrl(status, selectedMessageId);
+		if (!selectedMessageId) void refetch(status);
+	}, [status, selectedMessageId, refetch]);
+
+	const handleOpen = (id: string) => setSelectedMessageId(id);
+	const handleBack = () => setSelectedMessageId(null);
 
 	const handlePinToggle = async (id: string, next: boolean) => {
 		setRows((prev) =>
@@ -114,6 +122,15 @@ function InboxPage() {
 		}
 	};
 
+	// Thread view takes precedence.
+	if (selectedMessageId) {
+		return (
+			<div className="space-y-6">
+				<ThreadView messageId={selectedMessageId} debug={debug} onBack={handleBack} />
+			</div>
+		);
+	}
+
 	const bucketField: "sortAt" | "snoozeUntil" = status === "snoozed" ? "snoozeUntil" : "sortAt";
 	const bucketDirection = status === "snoozed" ? "future" : "past";
 
@@ -148,6 +165,7 @@ function InboxPage() {
 							<MessageCard
 								key={row.id}
 								row={row}
+								onOpen={handleOpen}
 								onPinToggle={handlePinToggle}
 								onDone={handleDone}
 								onSnoozeRequest={(id) => setSnoozingId(id)}
