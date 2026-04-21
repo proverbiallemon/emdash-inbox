@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 dependencies:
+  dompurify:
+    specifier: ^3.4.0
+    version: 3.4.0
   postal-mime:
     specifier: ^2.7.4
     version: 2.7.4
@@ -16,6 +19,9 @@ devDependencies:
   emdash:
     specifier: ^0.5.0
     version: 0.5.0(@astrojs/react@5.0.3)(@date-fns/tz@1.4.1)(@floating-ui/dom@1.7.6)(@tanstack/react-query@5.99.1)(@tanstack/react-router@1.168.23)(@tiptap/extension-collaboration@3.22.4)(@tiptap/extensions@3.22.4)(@tiptap/pm@3.22.4)(@tiptap/y-tiptap@3.0.3)(@types/react-dom@19.2.3)(@types/react@19.2.14)(astro@6.1.8)(date-fns@4.1.0)(echarts@6.0.0)(react-dom@19.2.5)(react@19.2.5)
+  happy-dom:
+    specifier: ^20.9.0
+    version: 20.9.0
   react:
     specifier: ^19
     version: 19.2.5
@@ -27,7 +33,7 @@ devDependencies:
     version: 6.0.3
   vitest:
     specifier: ^4.1.4
-    version: 4.1.4(vite@7.3.2)
+    version: 4.1.4(happy-dom@20.9.0)(vite@7.3.2)
 
 packages:
 
@@ -2554,7 +2560,6 @@ packages:
     dependencies:
       undici-types: 7.19.2
     dev: true
-    optional: true
 
   /@types/react-dom@19.2.3(@types/react@19.2.14):
     resolution: {integrity: sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ==}
@@ -2573,7 +2578,6 @@ packages:
   /@types/trusted-types@2.0.7:
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
     requiresBuild: true
-    dev: true
     optional: true
 
   /@types/unist@3.0.3:
@@ -2584,13 +2588,16 @@ packages:
     resolution: {integrity: sha512-zFDAD+tlpf2r4asuHEj0XH6pY6i0g5NeAHPn+15wk3BV6JA69eERFXC1gyGThDkVa1zCyKr5jox1+2LbV/AMLg==}
     dev: true
 
+  /@types/whatwg-mimetype@3.0.2:
+    resolution: {integrity: sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA==}
+    dev: true
+
   /@types/ws@8.18.1:
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
     requiresBuild: true
     dependencies:
       '@types/node': 25.6.0
     dev: true
-    optional: true
 
   /@ungap/structured-clone@1.3.0:
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
@@ -3295,7 +3302,6 @@ packages:
     resolution: {integrity: sha512-nolgK9JcaUXMSmW+j1yaSvaEaoXYHwWyGJlkoCTghc97KgGDDSnpoU/PlEnw63Ah+TGKFOyY+X5LnxaWbCSfXg==}
     optionalDependencies:
       '@types/trusted-types': 2.0.7
-    dev: true
 
   /domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
@@ -3821,6 +3827,21 @@ packages:
       radix3: 1.1.2
       ufo: 1.6.3
       uncrypto: 0.1.3
+    dev: true
+
+  /happy-dom@20.9.0:
+    resolution: {integrity: sha512-GZZ9mKe8r646NUAf/zemnGbjYh4Bt8/MqASJY+pSm5ZDtc3YQox+4gsLI7yi1hba6o+eCsGxpHn5+iEVn31/FQ==}
+    engines: {node: '>=20.0.0'}
+    dependencies:
+      '@types/node': 25.6.0
+      '@types/whatwg-mimetype': 3.0.2
+      '@types/ws': 8.18.1
+      entities: 7.0.1
+      whatwg-mimetype: 3.0.0
+      ws: 8.20.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
     dev: true
 
   /has-symbols@1.1.0:
@@ -6027,7 +6048,6 @@ packages:
     resolution: {integrity: sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==}
     requiresBuild: true
     dev: true
-    optional: true
 
   /unified@11.0.5:
     resolution: {integrity: sha512-xKvGhPWw3k84Qjh8bI3ZeJjqnyadK+GEFtazSfZv/rKeTkTjOJho6mFqh2SM96iIcZokxiOpg78GazTSg8+KHA==}
@@ -6315,7 +6335,7 @@ packages:
       vite: 7.3.2
     dev: true
 
-  /vitest@4.1.4(vite@7.3.2):
+  /vitest@4.1.4(happy-dom@20.9.0)(vite@7.3.2):
     resolution: {integrity: sha512-tFuJqTxKb8AvfyqMfnavXdzfy3h3sWZRWwfluGbkeR7n0HUev+FmNgZ8SDrRBTVrVCjgH5cA21qGbCffMNtWvg==}
     engines: {node: ^20.0.0 || ^22.0.0 || >=24.0.0}
     hasBin: true
@@ -6365,6 +6385,7 @@ packages:
       '@vitest/utils': 4.1.4
       es-module-lexer: 2.0.0
       expect-type: 1.3.0
+      happy-dom: 20.9.0
       magic-string: 0.30.21
       obug: 2.1.1
       pathe: 2.0.3
@@ -6394,6 +6415,11 @@ packages:
     requiresBuild: true
     dev: true
     optional: true
+
+  /whatwg-mimetype@3.0.0:
+    resolution: {integrity: sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q==}
+    engines: {node: '>=12'}
+    dev: true
 
   /which-pm-runs@1.1.0:
     resolution: {integrity: sha512-n1brCuqClxfFfq/Rb0ICg9giSZqCS+pLtccdag6C2HyufBrh3fBOiy9nb6ggRMvWOVH5GrdJskj5iGTZNxd7SA==}
@@ -6434,7 +6460,6 @@ packages:
       utf-8-validate:
         optional: true
     dev: true
-    optional: true
 
   /xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
