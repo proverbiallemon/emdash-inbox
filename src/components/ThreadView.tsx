@@ -30,6 +30,9 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	const [error, setError] = React.useState<string | null>(null);
 	const [revealedImages, setRevealedImages] = React.useState<Set<string>>(new Set());
 	const [snoozingOpen, setSnoozingOpen] = React.useState(false);
+	// Gate concurrent bulk calls so a second action can't clobber the first's
+	// optimistic state or failure-revert. Action buttons disable while busy.
+	const [busy, setBusy] = React.useState(false);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -60,25 +63,32 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 
 	// Bulk action orchestrator. Applies `transform` to every row locally,
 	// fires `call` in parallel; reverts just the failed rows on error.
+	// Gated by `busy` so two rapid clicks can't race on the same thread's state.
 	const bulk = React.useCallback(
 		async (
 			transform: (r: Row) => Row,
 			call: (r: Row) => Promise<void>,
 		) => {
+			if (busy) return;
+			setBusy(true);
 			const prev = thread;
 			setThread(thread.map(transform));
-			const results = await Promise.allSettled(thread.map(call));
-			const failedIds = results
-				.map((r, i) => (r.status === "rejected" ? thread[i].id : null))
-				.filter((id): id is string => id !== null);
-			if (failedIds.length > 0) {
-				setThread((curr) =>
-					curr.map((m) => (failedIds.includes(m.id) ? prev.find((p) => p.id === m.id)! : m)),
-				);
-				setError(`Failed to update ${failedIds.length} message(s).`);
+			try {
+				const results = await Promise.allSettled(thread.map(call));
+				const failedIds = results
+					.map((r, i) => (r.status === "rejected" ? thread[i].id : null))
+					.filter((id): id is string => id !== null);
+				if (failedIds.length > 0) {
+					setThread((curr) =>
+						curr.map((m) => (failedIds.includes(m.id) ? prev.find((p) => p.id === m.id)! : m)),
+					);
+					setError(`Failed to update ${failedIds.length} message(s).`);
+				}
+			} finally {
+				setBusy(false);
 			}
 		},
-		[thread],
+		[thread, busy],
 	);
 
 	const handlePin = (nextPinned: boolean) =>
@@ -159,6 +169,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 			<ThreadHeader subject={subject} participants={participants} messageCount={thread.length}>
 				<ThreadActions
 					thread={thread}
+					busy={busy}
 					onPin={handlePin}
 					onStatus={handleStatus}
 					onSnooze={() => setSnoozingOpen(true)}
