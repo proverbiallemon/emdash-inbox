@@ -10,7 +10,7 @@ import { validateTransition } from "./lib/statusTransitions";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.2.0",
+		version: "0.3.0",
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -261,7 +261,7 @@ async function persistInbound(
 export function createPlugin() {
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.2.0",
+		version: "0.3.0",
 
 		capabilities: [
 			"email:provide",
