@@ -322,9 +322,47 @@ async function persistInbound(
 	const fromAddr = parsed.from?.address ?? "(unknown)";
 	const fromName = parsed.from?.name ?? null;
 	const toAddr = parsed.to?.[0]?.address ?? "(unknown)";
+	const messageId = parsed.messageId ?? `<${msgId}@emdash-inbox.local>`;
+
+	// Derive threadId from headers. postal-mime types `inReplyTo` as a single
+	// Message-ID string and `references` as a space-separated string (per
+	// RFC 5322). Tolerate array form too in case the parser shape shifts.
+	const inReplyToHeader = parsed.inReplyTo ?? null;
+	const rawRefs: unknown = parsed.references;
+	const references: string[] = Array.isArray(rawRefs)
+		? (rawRefs as string[])
+		: typeof rawRefs === "string"
+			? rawRefs.split(/\s+/).filter(Boolean)
+			: [];
+
+	const lookup = async (msgIdToFind: string) => {
+		const hit = await (ctx.storage as any).messages.query({
+			where: { messageId: msgIdToFind },
+			limit: 1,
+		});
+		const row = hit.items?.[0];
+		return row
+			? { messageId: row.data.messageId, threadId: row.data.threadId ?? null }
+			: null;
+	};
+
+	// deriveThreadInfo is sync; run the lookups first and cache a tiny map
+	// over just the candidates.
+	const candidates = new Set<string>();
+	if (inReplyToHeader) candidates.add(inReplyToHeader);
+	for (const r of references) candidates.add(r);
+
+	const parents = new Map<string, { messageId: string; threadId: string | null }>();
+	for (const c of candidates) {
+		const p = await lookup(c);
+		if (p) parents.set(c, p);
+	}
+	const syncLookup = (id: string) => parents.get(id) ?? null;
+
+	const derived = deriveThreadInfo(messageId, inReplyToHeader, references, syncLookup);
 
 	const msg: MessageDoc = {
-		messageId: parsed.messageId ?? `<${msgId}@emdash-inbox.local>`,
+		messageId,
 		direction: "inbound",
 		from: fromAddr,
 		to: toAddr,
@@ -332,7 +370,7 @@ async function persistInbound(
 		bodyText: parsed.text ?? "",
 		bodyHtml: parsed.html ?? null,
 		bodyRaw: rawMime,
-		threadId: null,
+		threadId: derived.threadId,
 		receivedAt: now,
 		source: "inbound",
 		status: "inbox",
@@ -340,7 +378,7 @@ async function persistInbound(
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
-		inReplyTo: null,
+		inReplyTo: derived.inReplyTo,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
