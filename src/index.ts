@@ -139,6 +139,45 @@ async function persistOutbound(
 	await ctx.storage.contacts.put(contactId, contact);
 }
 
+/**
+ * Idempotent M3 setup — backfills sortAt/snoozeUntil on any pre-M3 message rows
+ * and ensures the wake-snoozed cron is scheduled.
+ *
+ * Called from plugin:install (fresh sites), plugin:activate (admin-UI-driven
+ * activations), and the top of messages/list (covers config-mode upgrades
+ * where neither lifecycle hook fires — in EmDash v0.5.0 config-registered
+ * plugins are auto-enabled without firing install/activate at boot).
+ *
+ * All operations are idempotent:
+ *   - Row backfill is guarded by `if (sortAt && snoozeUntil !== undefined) continue`.
+ *   - `ctx.cron.schedule` upserts by name (backed by _emdash_cron_tasks unique
+ *     index on (plugin_id, task_name)).
+ *
+ * Pre-alpha data volumes make the full-scan backfill cheap. If message counts
+ * grow into the tens of thousands, gate with a kv "m3:migrated" flag so the
+ * scan runs once per worker instead of per-request.
+ */
+async function ensureM3Setup(ctx: any): Promise<void> {
+	const all = await ctx.storage.messages.query({ limit: 10000 });
+	let migrated = 0;
+	for (const row of all.items as { id: string; data: any }[]) {
+		if (row.data.sortAt && row.data.snoozeUntil !== undefined) continue;
+		await ctx.storage.messages.put(row.id, {
+			...row.data,
+			sortAt: row.data.sortAt ?? row.data.receivedAt,
+			snoozeUntil: row.data.snoozeUntil ?? null,
+		});
+		migrated++;
+	}
+	if (migrated > 0) {
+		ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
+	}
+
+	await ctx.cron.schedule("wake-snoozed-messages", {
+		schedule: "*/5 * * * *",
+	});
+}
+
 async function persistInbound(
 	ctx: any,
 	rawMime: string,
@@ -241,38 +280,11 @@ export function createPlugin() {
 		hooks: {
 			"plugin:install": async (_event, ctx) => {
 				ctx.log.info("emdash-inbox installed");
+				await ensureM3Setup(ctx);
 			},
 
 			"plugin:activate": async (_event, ctx) => {
-				// Backfill sortAt/snoozeUntil on any M2 rows. Pre-alpha data volumes are
-				// tiny; a full scan is fine here. Idempotent — skips rows already migrated.
-				// Lives in plugin:activate (not plugin:install) because install only fires
-				// on first-ever install; activate re-fires on upgrade, which is what we need
-				// for M2→M3 sites.
-				const all = await (ctx.storage as any).messages.query({ limit: 10000 });
-				let migrated = 0;
-				for (const row of all.items as { id: string; data: any }[]) {
-					if (row.data.sortAt && row.data.snoozeUntil !== undefined) continue;
-					await (ctx.storage as any).messages.put(row.id, {
-						...row.data,
-						sortAt: row.data.sortAt ?? row.data.receivedAt,
-						snoozeUntil: row.data.snoozeUntil ?? null,
-					});
-					migrated++;
-				}
-				if (migrated > 0) {
-					ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
-				}
-
-				// Schedule the snooze-wake cron. ctx.cron.schedule is an upsert-by-name
-				// (backed by the _emdash_cron_tasks table) so calling it on every activate
-				// is safe and idempotent. The `cron` field is typed as optional on
-				// PluginContext but the EmDash runtime always provides it for plugins
-				// (the types comment says "always available on plugin context, scoped to
-				// plugin") — hence the non-null assertion.
-				await ctx.cron!.schedule("wake-snoozed-messages", {
-					schedule: "*/5 * * * *",
-				});
+				await ensureM3Setup(ctx);
 			},
 
 			"cron": async (event, ctx) => {
@@ -395,6 +407,11 @@ export function createPlugin() {
 		routes: {
 			"messages/list": {
 				handler: async (routeCtx) => {
+					// Lazy setup: EmDash v0.5.0 config-registered plugins don't fire
+					// plugin:install/activate at boot, so this is our only guaranteed
+					// hook for upgrade-time migrations and cron registration. Idempotent.
+					await ensureM3Setup(routeCtx);
+
 					const input = routeCtx.input as
 						| { status?: unknown; limit?: unknown; cursor?: unknown }
 						| null;
