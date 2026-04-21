@@ -2,6 +2,7 @@ import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
+import { deriveThreadInfo } from "./lib/threadDerive";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -175,27 +176,140 @@ async function persistOutbound(
  * grow into the tens of thousands, gate with a kv "m3:migrated" flag so the
  * scan runs once per worker instead of per-request.
  */
-async function ensureM3Setup(ctx: any): Promise<void> {
+async function ensureMigrations(ctx: any): Promise<void> {
 	const all = await ctx.storage.messages.query({ limit: 10000 });
-	let migrated = 0;
-	for (const row of all.items as { id: string; data: any }[]) {
+	const rows = all.items as { id: string; data: any }[];
+
+	// --- Pass 1: sortAt / snoozeUntil (M3) ---
+	let pass1 = 0;
+	for (const row of rows) {
 		if (row.data.sortAt && row.data.snoozeUntil !== undefined) continue;
 		await ctx.storage.messages.put(row.id, {
 			...row.data,
 			sortAt: row.data.sortAt ?? row.data.receivedAt,
 			snoozeUntil: row.data.snoozeUntil ?? null,
 		});
-		migrated++;
+		pass1++;
 	}
-	if (migrated > 0) {
-		ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
+	if (pass1 > 0) ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated: pass1 });
+
+	// Re-query so pass 2 sees the pass-1 writes.
+	const afterPass1 = await ctx.storage.messages.query({ limit: 10000 });
+	const freshRows = afterPass1.items as { id: string; data: any }[];
+
+	// Build a lookup by messageId for pass 2 + pass 3.
+	const byMessageId = new Map<string, { messageId: string; threadId: string | null }>();
+	for (const r of freshRows) {
+		byMessageId.set(r.data.messageId, {
+			messageId: r.data.messageId,
+			threadId: r.data.threadId ?? null,
+		});
+	}
+	const lookup = (msgId: string) => byMessageId.get(msgId) ?? null;
+
+	// --- Pass 2: threadId derivation (M4) ---
+	let pass2 = 0;
+	for (const row of freshRows) {
+		if (row.data.threadId) continue;
+
+		// Parse In-Reply-To + References from bodyRaw if we have it.
+		let inReplyToHeader: string | null = null;
+		let references: string[] = [];
+		if (row.data.bodyRaw) {
+			// Simple header scan. Full MIME re-parse via postal-mime is overkill for
+			// a header grep; bodyRaw has the original raw text.
+			inReplyToHeader = parseHeader(row.data.bodyRaw, "In-Reply-To");
+			const refsRaw = parseHeader(row.data.bodyRaw, "References");
+			if (refsRaw) references = refsRaw.split(/\s+/).filter(Boolean);
+		}
+		// Outbound rows don't have bodyRaw but might have data.inReplyTo already
+		// if they were written by a future persistOutbound that we haven't shipped
+		// yet. Prefer the explicit field when present.
+		if (!inReplyToHeader && row.data.inReplyTo) {
+			inReplyToHeader = row.data.inReplyTo;
+		}
+
+		const derived = deriveThreadInfo(
+			row.data.messageId,
+			inReplyToHeader,
+			references,
+			lookup,
+		);
+
+		await ctx.storage.messages.put(row.id, {
+			...row.data,
+			threadId: derived.threadId,
+			inReplyTo: derived.inReplyTo,
+		});
+
+		// Update our in-memory lookup so later rows in the same pass can resolve
+		// ancestors that were just processed.
+		byMessageId.set(row.data.messageId, {
+			messageId: row.data.messageId,
+			threadId: derived.threadId,
+		});
+		pass2++;
+	}
+	if (pass2 > 0) ctx.log.info("emdash-inbox: backfilled threadId", { migrated: pass2 });
+
+	// --- Pass 3: orphan retry (handles reply-before-parent in pass 2) ---
+	if (pass2 > 0) {
+		const afterPass2 = await ctx.storage.messages.query({ limit: 10000 });
+		let pass3 = 0;
+		for (const row of afterPass2.items as { id: string; data: any }[]) {
+			if (row.data.threadId !== row.data.messageId) continue;
+			if (!row.data.inReplyTo) continue;
+
+			const parent = byMessageId.get(row.data.inReplyTo);
+			if (!parent) continue;
+			const inheritedThreadId = parent.threadId ?? parent.messageId;
+			if (inheritedThreadId === row.data.threadId) continue;
+
+			await ctx.storage.messages.put(row.id, {
+				...row.data,
+				threadId: inheritedThreadId,
+			});
+			byMessageId.set(row.data.messageId, {
+				messageId: row.data.messageId,
+				threadId: inheritedThreadId,
+			});
+			pass3++;
+		}
+		if (pass3 > 0) ctx.log.info("emdash-inbox: orphan-retry linked threads", { migrated: pass3 });
 	}
 
+	// --- Cron schedule (M3; unchanged) ---
 	if (ctx.cron) {
 		await ctx.cron.schedule("wake-snoozed-messages", {
 			schedule: "*/5 * * * *",
 		});
 	}
+}
+
+/**
+ * Extract a single header value from raw RFC 822 text. Case-insensitive.
+ * Handles folded continuations (RFC 5322 §2.2.3) by joining continuation
+ * lines that start with whitespace. Returns trimmed value or null.
+ */
+function parseHeader(raw: string, name: string): string | null {
+	const lines = raw.split(/\r?\n/);
+	const prefix = name.toLowerCase() + ":";
+	let found: string | null = null;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].toLowerCase().startsWith(prefix)) {
+			let value = lines[i].slice(prefix.length).trim();
+			// Fold continuation lines.
+			while (i + 1 < lines.length && /^\s/.test(lines[i + 1])) {
+				value += " " + lines[i + 1].trim();
+				i++;
+			}
+			found = value;
+			break;
+		}
+		// Headers end at the first blank line.
+		if (lines[i] === "") break;
+	}
+	return found;
 }
 
 async function persistInbound(
@@ -301,11 +415,11 @@ export function createPlugin() {
 		hooks: {
 			"plugin:install": async (_event, ctx) => {
 				ctx.log.info("emdash-inbox installed");
-				await ensureM3Setup(ctx);
+				await ensureMigrations(ctx);
 			},
 
 			"plugin:activate": async (_event, ctx) => {
-				await ensureM3Setup(ctx);
+				await ensureMigrations(ctx);
 			},
 
 			"cron": async (event, ctx) => {
@@ -431,7 +545,7 @@ export function createPlugin() {
 					// Lazy setup: EmDash v0.5.0 config-registered plugins don't fire
 					// plugin:install/activate at boot, so this is our only guaranteed
 					// hook for upgrade-time migrations and cron registration. Idempotent.
-					await ensureM3Setup(routeCtx);
+					await ensureMigrations(routeCtx);
 
 					const input = routeCtx.input as
 						| { status?: unknown; limit?: unknown; cursor?: unknown }
