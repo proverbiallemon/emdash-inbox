@@ -140,13 +140,24 @@ async function persistOutbound(
 }
 
 /**
- * Idempotent M3 setup — backfills sortAt/snoozeUntil on any pre-M3 message rows
- * and ensures the wake-snoozed cron is scheduled.
+ * Idempotent M3 setup — backfills sortAt/snoozeUntil on any pre-M3 message
+ * rows, and (when `ctx.cron` is available) ensures the wake-snoozed cron is
+ * scheduled.
  *
- * Called from plugin:install (fresh sites), plugin:activate (admin-UI-driven
- * activations), and the top of messages/list (covers config-mode upgrades
- * where neither lifecycle hook fires — in EmDash v0.5.0 config-registered
- * plugins are auto-enabled without firing install/activate at boot).
+ * Called from three places, each with slightly different ctx shape:
+ *   - plugin:install  (fresh installs)         — ctx.cron is populated
+ *   - plugin:activate (admin-UI activations)    — ctx.cron is populated
+ *   - messages/list route (lazy, every request) — ctx.cron is UNDEFINED
+ *
+ * The route context skip is a quirk of EmDash v0.5.0: PluginRouteHandler
+ * constructs its own PluginContextFactory at boot, before the cron scheduler
+ * wires `cronReschedule` into the hook-pipeline factory — so route contexts
+ * never get `ctx.cron`. We tolerate this by skipping the schedule call when
+ * ctx.cron is missing.
+ *
+ * For config-registered plugins (astro.config.mjs) the admin-UI activate path
+ * is the ONLY way to fire plugin:activate. To schedule the cron on such
+ * sites, navigate to the admin plugins page and enable the plugin explicitly.
  *
  * All operations are idempotent:
  *   - Row backfill is guarded by `if (sortAt && snoozeUntil !== undefined) continue`.
@@ -173,9 +184,11 @@ async function ensureM3Setup(ctx: any): Promise<void> {
 		ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
 	}
 
-	await ctx.cron.schedule("wake-snoozed-messages", {
-		schedule: "*/5 * * * *",
-	});
+	if (ctx.cron) {
+		await ctx.cron.schedule("wake-snoozed-messages", {
+			schedule: "*/5 * * * *",
+		});
+	}
 }
 
 async function persistInbound(
