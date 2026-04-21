@@ -96,15 +96,44 @@ export interface ContactDoc {
 
 async function persistOutbound(
 	ctx: any,
-	event: { message: { to: string; subject: string; text: string; html?: string }; source: string },
+	event: {
+		message: {
+			to: string;
+			subject: string;
+			text: string;
+			html?: string;
+			inReplyTo?: string;
+		};
+		source: string;
+	},
 	senderAddress: string,
 ): Promise<void> {
 	const now = new Date().toISOString();
 	const msgId = crypto.randomUUID();
 	const senderDomain = senderAddress.split("@")[1] ?? "emdash-inbox.local";
+	const messageId = `<${msgId}@${senderDomain}>`;
+
+	// Derive threadId from inReplyTo (if caller provided).
+	const inReplyToHeader = event.message.inReplyTo ?? null;
+	let derivedThreadId = messageId;
+	let derivedInReplyTo: string | null = null;
+	if (inReplyToHeader) {
+		const hit = await (ctx.storage as any).messages.query({
+			where: { messageId: inReplyToHeader },
+			limit: 1,
+		});
+		const parent = hit.items?.[0];
+		const lookup = (id: string) =>
+			parent && parent.data.messageId === id
+				? { messageId: parent.data.messageId, threadId: parent.data.threadId ?? null }
+				: null;
+		const derived = deriveThreadInfo(messageId, inReplyToHeader, [], lookup);
+		derivedThreadId = derived.threadId;
+		derivedInReplyTo = derived.inReplyTo;
+	}
 
 	const msg: MessageDoc = {
-		messageId: `<${msgId}@${senderDomain}>`,
+		messageId,
 		direction: "outbound",
 		from: senderAddress,
 		to: event.message.to,
@@ -112,7 +141,7 @@ async function persistOutbound(
 		bodyText: event.message.text,
 		bodyHtml: event.message.html ?? null,
 		bodyRaw: null,
-		threadId: null,
+		threadId: derivedThreadId,
 		receivedAt: now,
 		source: event.source,
 		status: "done",
@@ -120,7 +149,7 @@ async function persistOutbound(
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
-		inReplyTo: null,
+		inReplyTo: derivedInReplyTo,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -521,6 +550,11 @@ export function createPlugin() {
 						text: event.message.text,
 					};
 					if (event.message.html) payload.html = event.message.html;
+					if ((event.message as any).inReplyTo) {
+						payload.headers = {
+							"In-Reply-To": (event.message as any).inReplyTo,
+						};
+					}
 
 					const response = await ctx.http.fetch(CF_SEND_ENDPOINT(accountId!), {
 						method: "POST",
