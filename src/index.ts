@@ -727,6 +727,32 @@ export function createPlugin() {
 				},
 			},
 
+			"messages/thread": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+
+					const input = routeCtx.input as { id?: unknown } | null;
+					const id = typeof input?.id === "string" ? input.id : null;
+					if (!id) {
+						throw PluginRouteError.badRequest("body must include id:string");
+					}
+
+					const row = await (routeCtx.storage as any).messages.get(id);
+					if (!row) {
+						throw PluginRouteError.notFound(`message ${id} not found`);
+					}
+
+					const threadId = row.threadId ?? row.messageId;
+					const result = await (routeCtx.storage as any).messages.query({
+						where: { threadId },
+						orderBy: { receivedAt: "asc" },
+						limit: 500,
+					});
+
+					return { items: result.items };
+				},
+			},
+
 			inbound: {
 				public: true,
 				handler: async (routeCtx) => {
