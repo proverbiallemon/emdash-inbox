@@ -75,6 +75,12 @@ export interface MessageDoc {
 	sortAt: string;
 	/** ISO8601. Only meaningful when status === "snoozed". Null otherwise. */
 	snoozeUntil: string | null;
+	/** Parent message's RFC 5322 Message-ID (angle-bracketed). Null when this
+	 *  message starts a thread. Set at ingest from the In-Reply-To header
+	 *  (inbound) or from the caller's inReplyTo field (outbound). Preserved
+	 *  even when parent lookup fails, so the orphan-retry backfill pass can
+	 *  retry linkage later. */
+	inReplyTo: string | null;
 }
 
 export interface ContactDoc {
@@ -113,6 +119,7 @@ async function persistOutbound(
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
+		inReplyTo: null,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -219,6 +226,7 @@ async function persistInbound(
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
+		inReplyTo: null,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
