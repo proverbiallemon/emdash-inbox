@@ -1,6 +1,7 @@
 import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
+import { validateTransition } from "./lib/statusTransitions";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -9,7 +10,7 @@ import PostalMime from "postal-mime";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.2.0",
+		version: "0.3.0",
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -69,6 +70,11 @@ export interface MessageDoc {
 	pinned: boolean;
 	/** M4. Null until the bundle classifier runs. */
 	bundleId: string | null;
+	/** ISO8601. Drives inbox sort order. Equals receivedAt on create;
+	 *  updated to wake-time when a snoozed message resurfaces. */
+	sortAt: string;
+	/** ISO8601. Only meaningful when status === "snoozed". Null otherwise. */
+	snoozeUntil: string | null;
 }
 
 export interface ContactDoc {
@@ -105,6 +111,8 @@ async function persistOutbound(
 		status: "done",
 		pinned: false,
 		bundleId: null,
+		sortAt: now,
+		snoozeUntil: null,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -129,6 +137,58 @@ async function persistOutbound(
 				outboundCount: 1,
 			};
 	await ctx.storage.contacts.put(contactId, contact);
+}
+
+/**
+ * Idempotent M3 setup — backfills sortAt/snoozeUntil on any pre-M3 message
+ * rows, and (when `ctx.cron` is available) ensures the wake-snoozed cron is
+ * scheduled.
+ *
+ * Called from three places, each with slightly different ctx shape:
+ *   - plugin:install  (fresh installs)         — ctx.cron is populated
+ *   - plugin:activate (admin-UI activations)    — ctx.cron is populated
+ *   - messages/list route (lazy, every request) — ctx.cron is UNDEFINED
+ *
+ * The route context skip is a quirk of EmDash v0.5.0: PluginRouteHandler
+ * constructs its own PluginContextFactory at boot, before the cron scheduler
+ * wires `cronReschedule` into the hook-pipeline factory — so route contexts
+ * never get `ctx.cron`. We tolerate this by skipping the schedule call when
+ * ctx.cron is missing.
+ *
+ * For config-registered plugins (astro.config.mjs) the admin-UI activate path
+ * is the ONLY way to fire plugin:activate. To schedule the cron on such
+ * sites, navigate to the admin plugins page and enable the plugin explicitly.
+ *
+ * All operations are idempotent:
+ *   - Row backfill is guarded by `if (sortAt && snoozeUntil !== undefined) continue`.
+ *   - `ctx.cron.schedule` upserts by name (backed by _emdash_cron_tasks unique
+ *     index on (plugin_id, task_name)).
+ *
+ * Pre-alpha data volumes make the full-scan backfill cheap. If message counts
+ * grow into the tens of thousands, gate with a kv "m3:migrated" flag so the
+ * scan runs once per worker instead of per-request.
+ */
+async function ensureM3Setup(ctx: any): Promise<void> {
+	const all = await ctx.storage.messages.query({ limit: 10000 });
+	let migrated = 0;
+	for (const row of all.items as { id: string; data: any }[]) {
+		if (row.data.sortAt && row.data.snoozeUntil !== undefined) continue;
+		await ctx.storage.messages.put(row.id, {
+			...row.data,
+			sortAt: row.data.sortAt ?? row.data.receivedAt,
+			snoozeUntil: row.data.snoozeUntil ?? null,
+		});
+		migrated++;
+	}
+	if (migrated > 0) {
+		ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated });
+	}
+
+	if (ctx.cron) {
+		await ctx.cron.schedule("wake-snoozed-messages", {
+			schedule: "*/5 * * * *",
+		});
+	}
 }
 
 async function persistInbound(
@@ -157,6 +217,8 @@ async function persistInbound(
 		status: "inbox",
 		pinned: false,
 		bundleId: null,
+		sortAt: now,
+		snoozeUntil: null,
 	};
 	await ctx.storage.messages.put(msgId, msg);
 
@@ -199,7 +261,7 @@ async function persistInbound(
 export function createPlugin() {
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.2.0",
+		version: "0.3.0",
 
 		capabilities: [
 			"email:provide",
@@ -213,6 +275,8 @@ export function createPlugin() {
 			messages: {
 				indexes: [
 					"receivedAt",
+					"sortAt",
+					"snoozeUntil",
 					"threadId",
 					"status",
 					"pinned",
@@ -229,6 +293,40 @@ export function createPlugin() {
 		hooks: {
 			"plugin:install": async (_event, ctx) => {
 				ctx.log.info("emdash-inbox installed");
+				await ensureM3Setup(ctx);
+			},
+
+			"plugin:activate": async (_event, ctx) => {
+				await ensureM3Setup(ctx);
+			},
+
+			"cron": async (event, ctx) => {
+				if (event.name !== "wake-snoozed-messages") return;
+
+				const now = new Date().toISOString();
+
+				const due = await (ctx.storage as any).messages.query({
+					where: { status: "snoozed" },
+					limit: 500,
+				});
+
+				let woken = 0;
+				for (const row of due.items as { id: string; data: any }[]) {
+					if (!row.data.snoozeUntil) continue;
+					if (row.data.snoozeUntil > now) continue;
+
+					await (ctx.storage as any).messages.put(row.id, {
+						...row.data,
+						status: "inbox",
+						sortAt: now,
+						snoozeUntil: null,
+					});
+					woken++;
+				}
+
+				if (woken > 0) {
+					ctx.log.info("emdash-inbox: woke snoozed messages", { woken });
+				}
 			},
 
 			"email:deliver": {
@@ -322,11 +420,116 @@ export function createPlugin() {
 		routes: {
 			"messages/list": {
 				handler: async (routeCtx) => {
-					const result = await (routeCtx.storage as any).messages.query({
-						orderBy: { receivedAt: "desc" },
-						limit: 100,
+					// Lazy setup: EmDash v0.5.0 config-registered plugins don't fire
+					// plugin:install/activate at boot, so this is our only guaranteed
+					// hook for upgrade-time migrations and cron registration. Idempotent.
+					await ensureM3Setup(routeCtx);
+
+					const input = routeCtx.input as
+						| { status?: unknown; limit?: unknown; cursor?: unknown }
+						| null;
+
+					const filter =
+						input?.status === "snoozed" || input?.status === "done" || input?.status === "all"
+							? input.status
+							: "inbox";
+					const limit = typeof input?.limit === "number" ? input.limit : 100;
+					const cursor = typeof input?.cursor === "string" ? input.cursor : undefined;
+
+					const sortField = filter === "snoozed" ? "snoozeUntil" : "sortAt";
+					const sortDir: "asc" | "desc" = filter === "snoozed" ? "asc" : "desc";
+
+					const query: any = {
+						orderBy: { [sortField]: sortDir },
+						limit,
+						cursor,
+					};
+					if (filter !== "all") {
+						query.where = { status: filter };
+					}
+
+					const result = await (routeCtx.storage as any).messages.query(query);
+
+					// Post-sort: pinned rows first within the already-sorted list. EmDash
+					// storage doesn't currently support composite orderBy, so we do this
+					// client-side against the limit-sized window — fine for pre-alpha
+					// volumes; revisit if inbox grows beyond a few thousand rows.
+					const items = [...result.items].sort((a: any, b: any) => {
+						if (a.data.pinned && !b.data.pinned) return -1;
+						if (!a.data.pinned && b.data.pinned) return 1;
+						return 0;
 					});
-					return { items: result.items, cursor: result.cursor };
+
+					return { items, cursor: result.cursor };
+				},
+			},
+
+			"messages/pin": {
+				handler: async (routeCtx) => {
+					const input = routeCtx.input as { id?: unknown; pinned?: unknown } | null;
+					const id = typeof input?.id === "string" ? input.id : null;
+					const pinned = typeof input?.pinned === "boolean" ? input.pinned : null;
+					if (!id || pinned === null) {
+						throw PluginRouteError.badRequest(
+							"body must include id:string and pinned:boolean",
+						);
+					}
+					const row = await (routeCtx.storage as any).messages.get(id);
+					if (!row) {
+						throw PluginRouteError.notFound(`message ${id} not found`);
+					}
+					await (routeCtx.storage as any).messages.put(id, {
+						...row,
+						pinned,
+					});
+					return { ok: true };
+				},
+			},
+
+			"messages/status": {
+				handler: async (routeCtx) => {
+					const input = routeCtx.input as
+						| { id?: unknown; status?: unknown; snoozeUntil?: unknown }
+						| null;
+
+					const id = typeof input?.id === "string" ? input.id : null;
+					const status = input?.status;
+					const snoozeUntil =
+						typeof input?.snoozeUntil === "string" ? input.snoozeUntil : undefined;
+
+					if (!id || (status !== "inbox" && status !== "snoozed" && status !== "done")) {
+						throw PluginRouteError.badRequest(
+							"body must include id:string and status:'inbox'|'snoozed'|'done'",
+						);
+					}
+
+					const row = await (routeCtx.storage as any).messages.get(id);
+					if (!row) {
+						throw PluginRouteError.notFound(`message ${id} not found`);
+					}
+
+					const check = validateTransition(row.status, status, snoozeUntil);
+					if (!check.ok) {
+						throw PluginRouteError.badRequest(check.error);
+					}
+
+					const now = new Date().toISOString();
+					const next = { ...row };
+
+					if (status === "inbox") {
+						next.status = "inbox";
+						next.sortAt = now;
+						next.snoozeUntil = null;
+					} else if (status === "snoozed") {
+						next.status = "snoozed";
+						next.snoozeUntil = snoozeUntil!;
+					} else if (status === "done") {
+						next.status = "done";
+						next.snoozeUntil = null;
+					}
+
+					await (routeCtx.storage as any).messages.put(id, next);
+					return { ok: true, status: next.status };
 				},
 			},
 
