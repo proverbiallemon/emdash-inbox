@@ -22,7 +22,7 @@ interface Props {
 	row: MessageCardRow;
 	onPinToggle: (id: string, nextPinned: boolean) => void;
 	onDone: (id: string) => void;
-	onSnoozeRequest: (id: string, anchorEl: HTMLElement) => void;
+	onSnoozeRequest: (id: string) => void;
 }
 
 function stripClass(direction: Direction, status: Status): string {
@@ -47,7 +47,6 @@ function preview(text: string): string {
 }
 
 export function MessageCard({ row, onPinToggle, onDone, onSnoozeRequest }: Props) {
-	const snoozeBtnRef = React.useRef<HTMLButtonElement | null>(null);
 	const m = row.data;
 	const counterparty = m.direction === "inbound" ? m.from : `→ ${m.to}`;
 	const subject = m.subject || "(no subject)";
@@ -87,11 +86,8 @@ export function MessageCard({ row, onPinToggle, onDone, onSnoozeRequest }: Props
 				</button>
 				<button
 					type="button"
-					ref={snoozeBtnRef}
 					className="text-[10px] px-2 py-0.5 border rounded hover:bg-muted"
-					onClick={() =>
-						snoozeBtnRef.current && onSnoozeRequest(row.id, snoozeBtnRef.current)
-					}
+					onClick={() => onSnoozeRequest(row.id)}
 				>
 					⏰ Snooze
 				</button>
