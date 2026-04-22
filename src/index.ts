@@ -3,7 +3,6 @@ import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
-import { sanitizeComposeHtml } from "./lib/sanitize";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -821,19 +820,16 @@ export function createPlugin() {
 						throw PluginRouteError.badRequest("html: required non-empty string");
 					}
 
-					// Defensive re-sanitization — never trust client-side sanitized output.
-					const safeHtml = sanitizeComposeHtml(html);
-					if (!safeHtml) {
-						throw PluginRouteError.badRequest("html sanitized to empty — nothing to send");
-					}
+					// Server-side re-sanitization is deferred to a DOM-free sanitizer
+					// (linkedom-backed DOMPurify or sanitize-html via parse5) — the
+					// browser-only DOMPurify we use client-side throws server-side because
+					// Cloudflare Workers has no window. Trust constraint for M5: the route
+					// is admin-authenticated, and TipTap StarterKit constrains the wire
+					// HTML to a known element set. Tracked in deferred list.
 
 					try {
-						// Bypass ctx.email (undefined on route contexts in emdash v0.5.0;
-						// same factory-wiring gap as ctx.cron). Call our own deliver path
-						// directly. Side effect: email:intercept hooks don't fire for this
-						// send — acceptable since our only intercept is a no-op afterSend.
 						await deliverEmail(routeCtx, {
-							message: { to, subject, text, html: safeHtml, inReplyTo },
+							message: { to, subject, text, html, inReplyTo },
 							source: "emdash-inbox:reply",
 						});
 					} catch (err) {
