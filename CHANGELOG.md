@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-04-21
+
+### Added
+
+- Inline reply / compose in `<ThreadView>`. New "↩ Reply" button
+  (first in the thread action row) opens a compose form below the
+  last message: `To` and `Subject` pre-filled (Subject de-duplicated
+  so `"Re: Re: Hello"` collapses to `"Re: Hello"`), editor seeded
+  with a `<blockquote>` containing the parent body and a
+  `On <date>, <sender> wrote:` header. Cmd/Ctrl+Enter sends; Esc
+  discards (with confirm-if-dirty).
+- Rich-text editor via TipTap StarterKit. Toolbar covers bold,
+  italic, bullet list, ordered list, blockquote, link, undo, redo.
+  TipTap's default editor-level shortcuts (Cmd+B, Cmd+I, Cmd+K,
+  Cmd+Z) work out of the box.
+- New plugin route `messages/reply` (admin-auth). Validates input,
+  then dispatches via the new shared `deliverEmail()` function —
+  same path the `email:deliver` hook takes for plugin-initiated
+  sends. `persistOutbound` records the new outbound row with
+  `threadId` and `inReplyTo` derived correctly via M4's
+  `deriveThreadInfo`.
+- Internal refactor: the `email:deliver` handler body extracted into
+  `deliverEmail(ctx, event)` so both the hook and the new route can
+  share the CF Email Service REST call + outbound persistence
+  logic. (Discovery during M5 implementation: `ctx.email` is
+  undefined on plugin route contexts in emdash v0.5.0 — same
+  factory-wiring gap as `ctx.cron`. Calling `deliverEmail`
+  directly works around it.)
+- Typed `DeliverError` so the route can surface operator-actionable
+  failure text (missing settings, CF rejection) through
+  `PluginRouteError.badRequest` — emdash masks `internal` error
+  messages on the wire as the literal string `"Plugin route error"`.
+- Two new logic modules with vitest coverage: `replyDefaults` (pure
+  pre-fill computation: To, Re-prefix dedup, quoted-body HTML
+  assembly) and `sanitizeComposeHtml` (StarterKit allowlist, image
+  stripping, link-rel annotation, javascript:-href strip).
+- Three new admin components: `ReplyCompose` (orchestrator),
+  `TipTapEditor` (minimal `useEditor` wrapper), `ComposeToolbar`
+  (formatting buttons).
+- Three new runtime deps: `@tiptap/react`, `@tiptap/starter-kit`,
+  `@tiptap/pm`. The admin entry's bundled output stays small (our
+  `dist/admin.mjs` is ~34KB unzipped) because `tsdown`
+  auto-externalizes runtime deps; the host's Vite resolves and
+  bundles TipTap into the admin assets at host-build time via the
+  existing `ssr.noExternal: ["emdash-inbox"]` pattern.
+
+### Deferred to M6+
+
+Reply-all / CC / BCC, compose-from-scratch ("New email" button),
+draft persistence (local + server), signatures, attachments,
+collapsible quoted text (Gmail-style "…" toggle), thread-grouping
+in the inbox list, toast undo for state transitions, standalone
+reminders collection, bundles / AI sort, References-chain building
+on outbound (we set `In-Reply-To` only), iframe sandboxing for
+inbound HTML rendering, quote-stripping on inbound display,
+per-message-in-thread actions, and: server-side HTML
+re-sanitization in the reply route (DOMPurify needs a DOM, doesn't
+run in Workers — re-add via a DOM-free sanitizer like
+`sanitize-html` via parse5 or `linkedom`-backed DOMPurify),
+abort-during-send (Discard button is currently disabled while
+sending; no `AbortController`), reply-form cursor placement
+(currently lands at document start, before the "On X wrote:"
+header), toolbar render gap (editor visible one frame before
+toolbar; cosmetic on fast devices), and explicit
+`@tiptap/extension-link` configuration with `openOnClick: false,
+autolink: false` (currently uses StarterKit defaults).
+
 ## [0.4.0] — 2026-04-20
 
 ### Added
