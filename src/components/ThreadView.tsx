@@ -4,6 +4,8 @@ import { ThreadHeader } from "./ThreadHeader";
 import { ThreadActions } from "./ThreadActions";
 import { ThreadMessage, type ThreadMessageRow } from "./ThreadMessage";
 import { SnoozePicker } from "./SnoozePicker";
+import { ReplyCompose } from "./ReplyCompose";
+import { replyDefaults } from "../lib/replyDefaults";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -33,33 +35,32 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	// Gate concurrent bulk calls so a second action can't clobber the first's
 	// optimistic state or failure-revert. Action buttons disable while busy.
 	const [busy, setBusy] = React.useState(false);
+	const [replyOpen, setReplyOpen] = React.useState(false);
+
+	const loadThread = React.useCallback(async () => {
+		setLoading(true);
+		setError(null);
+		try {
+			const res = await apiFetch(`${API}/messages/thread`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ id: messageId }),
+			});
+			const data = await parseApiResponse<{ items: Row[] }>(
+				res,
+				"Failed to load thread",
+			);
+			setThread(data.items);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setLoading(false);
+		}
+	}, [messageId]);
 
 	React.useEffect(() => {
-		let cancelled = false;
-		void (async () => {
-			setLoading(true);
-			setError(null);
-			try {
-				const res = await apiFetch(`${API}/messages/thread`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ id: messageId }),
-				});
-				const data = await parseApiResponse<{ items: Row[] }>(
-					res,
-					"Failed to load thread",
-				);
-				if (!cancelled) setThread(data.items);
-			} catch (err) {
-				if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-			} finally {
-				if (!cancelled) setLoading(false);
-			}
-		})();
-		return () => {
-			cancelled = true;
-		};
-	}, [messageId]);
+		void loadThread();
+	}, [loadThread]);
 
 	// Bulk action orchestrator. Applies `transform` to every row locally,
 	// fires `call` in parallel; reverts just the failed rows on error.
@@ -117,6 +118,13 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 			},
 		);
 
+	const handleReply = () => setReplyOpen(true);
+	const handleReplySent = async () => {
+		setReplyOpen(false);
+		await loadThread();
+	};
+	const handleReplyDiscard = () => setReplyOpen(false);
+
 	const handleSnoozeConfirm = async (iso: string) => {
 		setSnoozingOpen(false);
 		await bulk(
@@ -170,6 +178,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 				<ThreadActions
 					thread={thread}
 					busy={busy}
+					onReply={handleReply}
 					onPin={handlePin}
 					onStatus={handleStatus}
 					onSnooze={() => setSnoozingOpen(true)}
@@ -190,6 +199,22 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 						}
 					/>
 				))}
+				{replyOpen && thread.length > 0 && (
+					<ReplyCompose
+						defaults={replyDefaults({
+							direction: thread[thread.length - 1].data.direction,
+							from: thread[thread.length - 1].data.from,
+							to: thread[thread.length - 1].data.to,
+							subject: thread[thread.length - 1].data.subject,
+							bodyText: thread[thread.length - 1].data.bodyText,
+							bodyHtml: thread[thread.length - 1].data.bodyHtml,
+							receivedAt: thread[thread.length - 1].data.receivedAt,
+						})}
+						inReplyTo={thread[thread.length - 1].data.messageId}
+						onSent={handleReplySent}
+						onDiscard={handleReplyDiscard}
+					/>
+				)}
 				{snoozingOpen && (
 					<SnoozePicker
 						debug={debug}
