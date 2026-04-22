@@ -115,4 +115,15 @@ describe("sanitizeComposeHtml", () => {
 	it("returns empty string for empty input", () => {
 		expect(sanitizeComposeHtml("")).toBe("");
 	});
+
+	it("strips <img> even inside HTML comments", () => {
+		const out = sanitizeComposeHtml("<!--<img src=x>--><p>hi</p>");
+		expect(out).not.toMatch(/<img/i);
+	});
+
+	it("strips <img> even with > inside quoted attributes", () => {
+		const out = sanitizeComposeHtml('<img src="x>y" alt="z"><p>after</p>');
+		expect(out).not.toMatch(/<img/i);
+		expect(out).toContain("after");
+	});
 });

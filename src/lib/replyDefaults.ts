@@ -41,7 +41,7 @@ function plainTextToHtml(text: string): string {
 
 function formatQuoteDate(iso: string): string {
 	const d = new Date(iso);
-	return d.toLocaleDateString(undefined, {
+	return d.toLocaleString(undefined, {
 		weekday: "long",
 		year: "numeric",
 		month: "long",
