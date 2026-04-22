@@ -439,6 +439,21 @@ async function persistInbound(
 }
 
 /**
+ * Errors thrown by `deliverEmail` for known classified failure modes (missing
+ * settings, transport rejection, configuration gap). Distinguishable by the
+ * route caller from generic JS errors so it can surface the message verbatim
+ * via `PluginRouteError.badRequest` — emdash strips messages from
+ * `PluginRouteError.internal` on the wire, so unknown errors get a generic
+ * code while these get the operator-actionable text.
+ */
+class DeliverError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "DeliverError";
+	}
+}
+
+/**
  * Deliver one outbound email via the Cloudflare Email Service REST API and
  * persist the outbound row inline. Shared between the `email:deliver` plugin
  * hook (called by emdash for any plugin invoking ctx.email.send) and the
@@ -448,6 +463,11 @@ async function persistInbound(
  * Persistence runs inline (not via `email:afterSend`) — emdash doesn't await
  * afterSend on Workers, so DB writes there hang as the request context tears
  * down. Wrapped so persistence never masks a successful delivery.
+ *
+ * Note: route callers bypass `email:intercept` hooks entirely (no
+ * `beforeSend` / `afterSend` fires for route-initiated sends). Acceptable
+ * today because our only intercept is a no-op `afterSend`. If a future
+ * intercept hook starts doing real work, route callers must replicate it.
  */
 async function deliverEmail(
 	ctx: any,
@@ -457,7 +477,7 @@ async function deliverEmail(
 	},
 ): Promise<void> {
 	if (!ctx.http) {
-		throw new Error(
+		throw new DeliverError(
 			"emdash-inbox: ctx.http unavailable — network:fetch capability not granted",
 		);
 	}
@@ -474,7 +494,7 @@ async function deliverEmail(
 	if (!apiToken) missing.push("apiToken");
 	if (!senderAddress) missing.push("senderAddress");
 	if (missing.length > 0) {
-		throw new Error(
+		throw new DeliverError(
 			`emdash-inbox: cannot deliver email — missing settings: ${missing.join(", ")}. Configure in Admin → emdash-inbox → Settings.`,
 		);
 	}
@@ -509,7 +529,7 @@ async function deliverEmail(
 			to: event.message.to,
 			source: event.source,
 		});
-		throw new Error(
+		throw new DeliverError(
 			`emdash-inbox: CF Email Service returned ${response.status}`,
 		);
 	}
@@ -817,6 +837,12 @@ export function createPlugin() {
 							source: "emdash-inbox:reply",
 						});
 					} catch (err) {
+						if (err instanceof DeliverError) {
+							// Surface operator-actionable failure text (missing settings, CF
+							// rejection) through badRequest — emdash masks internal-error
+							// messages on the wire.
+							throw PluginRouteError.badRequest(err.message);
+						}
 						const msg = err instanceof Error ? err.message : String(err);
 						throw PluginRouteError.internal(`send failed: ${msg}`);
 					}
