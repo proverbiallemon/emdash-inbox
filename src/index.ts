@@ -3,6 +3,7 @@ import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
+import { sanitizeComposeHtml } from "./lib/sanitize";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -438,6 +439,98 @@ async function persistInbound(
 }
 
 /**
+ * Deliver one outbound email via the Cloudflare Email Service REST API and
+ * persist the outbound row inline. Shared between the `email:deliver` plugin
+ * hook (called by emdash for any plugin invoking ctx.email.send) and the
+ * `messages/reply` route (called from the admin compose form — `ctx.email` is
+ * undefined on plugin route contexts in emdash v0.5.0, same gap as ctx.cron).
+ *
+ * Persistence runs inline (not via `email:afterSend`) — emdash doesn't await
+ * afterSend on Workers, so DB writes there hang as the request context tears
+ * down. Wrapped so persistence never masks a successful delivery.
+ */
+async function deliverEmail(
+	ctx: any,
+	event: {
+		message: { to: string; subject: string; text: string; html?: string; inReplyTo?: string };
+		source: string;
+	},
+): Promise<void> {
+	if (!ctx.http) {
+		throw new Error(
+			"emdash-inbox: ctx.http unavailable — network:fetch capability not granted",
+		);
+	}
+
+	const kv = ctx.kv as { get<T>(key: string): Promise<T | null> };
+	const [accountId, apiToken, senderAddress] = await Promise.all([
+		kv.get<string>(SETTINGS.accountId),
+		kv.get<string>(SETTINGS.apiToken),
+		kv.get<string>(SETTINGS.senderAddress),
+	]);
+
+	const missing: string[] = [];
+	if (!accountId) missing.push("accountId");
+	if (!apiToken) missing.push("apiToken");
+	if (!senderAddress) missing.push("senderAddress");
+	if (missing.length > 0) {
+		throw new Error(
+			`emdash-inbox: cannot deliver email — missing settings: ${missing.join(", ")}. Configure in Admin → emdash-inbox → Settings.`,
+		);
+	}
+
+	const payload: Record<string, unknown> = {
+		to: event.message.to,
+		from: senderAddress,
+		subject: event.message.subject,
+		text: event.message.text,
+	};
+	if (event.message.html) payload.html = event.message.html;
+	if (event.message.inReplyTo) {
+		payload.headers = {
+			"In-Reply-To": event.message.inReplyTo,
+		};
+	}
+
+	const response = await ctx.http.fetch(CF_SEND_ENDPOINT(accountId!), {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${apiToken}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify(payload),
+	});
+
+	if (!response.ok) {
+		const body = await response.text();
+		ctx.log.error("emdash-inbox: CF Email Service rejected send", {
+			status: response.status,
+			body,
+			to: event.message.to,
+			source: event.source,
+		});
+		throw new Error(
+			`emdash-inbox: CF Email Service returned ${response.status}`,
+		);
+	}
+
+	ctx.log.info("emdash-inbox: delivered", {
+		to: event.message.to,
+		subject: event.message.subject,
+		source: event.source,
+	});
+
+	try {
+		await persistOutbound(ctx, event, senderAddress!);
+	} catch (err) {
+		ctx.log.error("emdash-inbox: failed to persist outbound", {
+			to: event.message.to,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
  * Plugin definition — runs on the deployed server at request time.
  *
  * Transport choice: we POST to the Cloudflare Email Service REST API rather
@@ -521,82 +614,7 @@ export function createPlugin() {
 			"email:deliver": {
 				exclusive: true,
 				handler: async (event, ctx) => {
-					if (!ctx.http) {
-						throw new Error(
-							"emdash-inbox: ctx.http unavailable — network:fetch capability not granted",
-						);
-					}
-
-					const [accountId, apiToken, senderAddress] = await Promise.all([
-						ctx.kv.get<string>(SETTINGS.accountId),
-						ctx.kv.get<string>(SETTINGS.apiToken),
-						ctx.kv.get<string>(SETTINGS.senderAddress),
-					]);
-
-					const missing: string[] = [];
-					if (!accountId) missing.push("accountId");
-					if (!apiToken) missing.push("apiToken");
-					if (!senderAddress) missing.push("senderAddress");
-					if (missing.length > 0) {
-						throw new Error(
-							`emdash-inbox: cannot deliver email — missing settings: ${missing.join(", ")}. Configure in Admin → emdash-inbox → Settings.`,
-						);
-					}
-
-					const payload: Record<string, unknown> = {
-						to: event.message.to,
-						from: senderAddress,
-						subject: event.message.subject,
-						text: event.message.text,
-					};
-					if (event.message.html) payload.html = event.message.html;
-					if ((event.message as any).inReplyTo) {
-						payload.headers = {
-							"In-Reply-To": (event.message as any).inReplyTo,
-						};
-					}
-
-					const response = await ctx.http.fetch(CF_SEND_ENDPOINT(accountId!), {
-						method: "POST",
-						headers: {
-							Authorization: `Bearer ${apiToken}`,
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify(payload),
-					});
-
-					if (!response.ok) {
-						const body = await response.text();
-						ctx.log.error("emdash-inbox: CF Email Service rejected send", {
-							status: response.status,
-							body,
-							to: event.message.to,
-							source: event.source,
-						});
-						throw new Error(
-							`emdash-inbox: CF Email Service returned ${response.status}`,
-						);
-					}
-
-					ctx.log.info("emdash-inbox: delivered", {
-						to: event.message.to,
-						subject: event.message.subject,
-						source: event.source,
-					});
-
-					// Persist inline (not in email:afterSend) — emdash calls afterSend
-					// fire-and-forget, so in the Cloudflare Workers runtime the request
-					// context tears down before our DB writes land. Done here while the
-					// request scope is still live. Wrapped so persistence never masks a
-					// successful delivery.
-					try {
-						await persistOutbound(ctx, event, senderAddress!);
-					} catch (err) {
-						ctx.log.error("emdash-inbox: failed to persist outbound", {
-							to: event.message.to,
-							error: err instanceof Error ? err.message : String(err),
-						});
-					}
+					await deliverEmail(ctx, event);
 				},
 			},
 
@@ -750,6 +768,60 @@ export function createPlugin() {
 					});
 
 					return { items: result.items };
+				},
+			},
+
+			"messages/reply": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+
+					const input = routeCtx.input as
+						| { inReplyTo?: unknown; to?: unknown; subject?: unknown; text?: unknown; html?: unknown }
+						| null;
+
+					const inReplyTo = typeof input?.inReplyTo === "string" ? input.inReplyTo.trim() : "";
+					const to = typeof input?.to === "string" ? input.to.trim() : "";
+					const subject = typeof input?.subject === "string" ? input.subject.trim() : "";
+					const text = typeof input?.text === "string" ? input.text : "";
+					const html = typeof input?.html === "string" ? input.html : "";
+
+					if (!inReplyTo) {
+						throw PluginRouteError.badRequest("inReplyTo: required non-empty string");
+					}
+					if (!to || !/^\S+@\S+\.\S+$/.test(to)) {
+						throw PluginRouteError.badRequest("to: required, must look like an email address");
+					}
+					if (!subject) {
+						throw PluginRouteError.badRequest("subject: required non-empty string");
+					}
+					if (!text) {
+						throw PluginRouteError.badRequest("text: required non-empty string");
+					}
+					if (!html) {
+						throw PluginRouteError.badRequest("html: required non-empty string");
+					}
+
+					// Defensive re-sanitization — never trust client-side sanitized output.
+					const safeHtml = sanitizeComposeHtml(html);
+					if (!safeHtml) {
+						throw PluginRouteError.badRequest("html sanitized to empty — nothing to send");
+					}
+
+					try {
+						// Bypass ctx.email (undefined on route contexts in emdash v0.5.0;
+						// same factory-wiring gap as ctx.cron). Call our own deliver path
+						// directly. Side effect: email:intercept hooks don't fire for this
+						// send — acceptable since our only intercept is a no-op afterSend.
+						await deliverEmail(routeCtx, {
+							message: { to, subject, text, html: safeHtml, inReplyTo },
+							source: "emdash-inbox:reply",
+						});
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err);
+						throw PluginRouteError.internal(`send failed: ${msg}`);
+					}
+
+					return { ok: true };
 				},
 			},
 
