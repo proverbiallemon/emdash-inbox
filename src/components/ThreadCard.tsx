@@ -101,7 +101,7 @@ export function ThreadCard({ row, busy, onOpen, onPinToggle, onDone, onSnoozeReq
 					{visibleChips.map((c, i) => (
 						<span
 							key={`${c.label}-${i}`}
-							className={`inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded mr-1 align-middle ${c.isYou ? "bg-primary/20 text-primary" : "bg-muted"}`}
+							className={`inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded mr-1 align-middle ${c.isYou ? "bg-primary text-primary-foreground" : "bg-muted"}`}
 							title={c.label}
 						>
 							{c.initial}
