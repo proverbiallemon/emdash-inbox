@@ -62,7 +62,10 @@ export function replyDefaults(row: ReplyDefaultsInput): ReplyDefaultsOutput {
 		? sanitizeComposeHtml(row.bodyHtml)
 		: plainTextToHtml(row.bodyText);
 
-	const quoteHtml = `<p>${header}</p><blockquote>${quotedBody}</blockquote>`;
+	// Empty leading <p> gives the user a blank paragraph at document start —
+	// editor.commands.focus("start") then puts the cursor inside it, so typing
+	// doesn't disturb the "On X wrote:" attribution line below.
+	const quoteHtml = `<p></p><p>${header}</p><blockquote>${quotedBody}</blockquote>`;
 
 	return { to, subject, quoteHtml };
 }
