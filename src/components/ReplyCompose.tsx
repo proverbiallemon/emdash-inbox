@@ -26,6 +26,7 @@ export function ReplyCompose({ defaults, inReplyTo, onSent, onDiscard }: Props) 
 	const [error, setError] = React.useState<string | null>(null);
 	const [editor, setEditor] = React.useState<Editor | null>(null);
 	const [initialSnapshot, setInitialSnapshot] = React.useState<string | null>(null);
+	const [abortCtrl, setAbortCtrl] = React.useState<AbortController | null>(null);
 
 	const handleEditorReady = React.useCallback((ed: Editor) => {
 		setEditor(ed);
@@ -42,6 +43,8 @@ export function ReplyCompose({ defaults, inReplyTo, onSent, onDiscard }: Props) 
 		if (!editor || sending) return;
 		setSending(true);
 		setError(null);
+		const ctrl = new AbortController();
+		setAbortCtrl(ctrl);
 		try {
 			const html = editor.getHTML();
 			const text = editor.getText();
@@ -49,6 +52,7 @@ export function ReplyCompose({ defaults, inReplyTo, onSent, onDiscard }: Props) 
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ inReplyTo, to, subject, text, html }),
+				signal: ctrl.signal,
 			});
 			if (!res.ok) {
 				let message = `send failed (${res.status})`;
@@ -62,16 +66,29 @@ export function ReplyCompose({ defaults, inReplyTo, onSent, onDiscard }: Props) 
 			}
 			onSent();
 		} catch (err) {
+			// AbortError fires when the user clicks Discard mid-send. Treat as
+			// a no-op — the discard handler already calls onDiscard() to close
+			// the form, and there's nothing for the user to retry.
+			if (err instanceof DOMException && err.name === "AbortError") return;
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
 			setSending(false);
+			setAbortCtrl(null);
 		}
 	}, [editor, sending, inReplyTo, to, subject, onSent]);
 
 	const handleDiscard = React.useCallback(() => {
+		// Mid-send: cancel the in-flight request and close immediately. The user
+		// explicitly chose to abandon the send, so don't confirm — they're already
+		// committing to discard by clicking during "Sending…".
+		if (sending) {
+			abortCtrl?.abort();
+			onDiscard();
+			return;
+		}
 		if (isDirty() && !window.confirm("Discard this reply?")) return;
 		onDiscard();
-	}, [isDirty, onDiscard]);
+	}, [sending, abortCtrl, isDirty, onDiscard]);
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
 		if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -127,10 +144,9 @@ export function ReplyCompose({ defaults, inReplyTo, onSent, onDiscard }: Props) 
 				<button
 					type="button"
 					className="text-sm px-4 py-1.5 rounded border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-					disabled={sending}
 					onClick={handleDiscard}
 				>
-					Discard
+					{sending ? "Cancel send" : "Discard"}
 				</button>
 			</div>
 		</div>
