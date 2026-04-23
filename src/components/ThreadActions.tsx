@@ -14,12 +14,13 @@ interface Props {
 	thread: ThreadActionsRow[];
 	/** Disable buttons while a bulk action is in flight. */
 	busy?: boolean;
+	onReply: () => void;
 	onPin: (nextPinned: boolean) => void;
 	onStatus: (nextStatus: "inbox" | "done") => void;
 	onSnooze: () => void;
 }
 
-export function ThreadActions({ thread, busy, onPin, onStatus, onSnooze }: Props) {
+export function ThreadActions({ thread, busy, onReply, onPin, onStatus, onSnooze }: Props) {
 	const allPinned = thread.every((m) => m.data.pinned);
 	const allDone = thread.every((m) => m.data.status === "done");
 	const btnClass =
@@ -27,6 +28,14 @@ export function ThreadActions({ thread, busy, onPin, onStatus, onSnooze }: Props
 
 	return (
 		<div className="flex gap-2 pt-3">
+			<button
+				type="button"
+				className={btnClass}
+				disabled={busy}
+				onClick={onReply}
+			>
+				↩ Reply
+			</button>
 			<button
 				type="button"
 				className={btnClass}
