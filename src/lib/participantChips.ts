@@ -32,7 +32,14 @@ export function deriveParticipantChips(
 		if (isYou) {
 			if (seen.has("__you__")) continue;
 			seen.add("__you__");
-			chips.push({ label: "you", initial: "Y", isYou: true });
+			// Derive from senderAddress local-part so the chip matches EmDash's
+			// top-right user-avatar treatment (initial + name) instead of the
+			// generic "Y you" placeholder. Falls back to "you"/"Y" only when
+			// senderAddress is empty (settings not configured yet).
+			const senderLocal = senderLc.split("@")[0] || "";
+			const label = senderLocal || "you";
+			const initial = (senderLocal.charAt(0) || "y").toUpperCase();
+			chips.push({ label, initial, isYou: true });
 			continue;
 		}
 

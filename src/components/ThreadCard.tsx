@@ -52,11 +52,18 @@ export function ThreadCard({ row, busy, onOpen, onPinToggle, onDone, onSnoozeReq
 
 	const dateIso = latest.status === "snoozed" && latest.snoozeUntil ? latest.snoozeUntil : latest.sortAt;
 
-	const previousLabel = previous
-		? previous.direction === "outbound"
-			? "you"
-			: (previous.from.toLowerCase().split("@")[0] || previous.from)
-		: null;
+	// Look up the previous message's sender label from the already-derived
+	// participants list so it matches the chip treatment (e.g. "pocketbear"
+	// instead of "you"). Falls back to from-local-part if the lookup misses
+	// (shouldn't happen — every message contributes a chip).
+	const previousLabel = (() => {
+		if (!previous) return null;
+		if (previous.direction === "outbound") {
+			return row.participants.find((p) => p.isYou)?.label ?? "you";
+		}
+		const fromLocal = previous.from.toLowerCase().split("@")[0] || previous.from;
+		return row.participants.find((p) => !p.isYou && p.label === fromLocal)?.label ?? fromLocal;
+	})();
 
 	return (
 		<div
@@ -94,7 +101,7 @@ export function ThreadCard({ row, busy, onOpen, onPinToggle, onDone, onSnoozeReq
 					{visibleChips.map((c, i) => (
 						<span
 							key={`${c.label}-${i}`}
-							className="inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded bg-muted mr-1 align-middle"
+							className={`inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded mr-1 align-middle ${c.isYou ? "bg-primary/20 text-primary" : "bg-muted"}`}
 							title={c.label}
 						>
 							{c.initial}
