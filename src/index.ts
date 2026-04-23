@@ -791,6 +791,27 @@ export function createPlugin() {
 						limit: 500,
 					});
 
+					// Side-effect: mark every unread message in this thread read. Wrapped so a
+					// write failure doesn't fail the fetch — same defensive pattern as
+					// persistOutbound inside deliverEmail. Returned items are the pre-write
+					// snapshot; the inbox list re-fetches on back-navigation and sees the
+					// updated state.
+					try {
+						for (const r of result.items as { id: string; data: any }[]) {
+							if (r.data.read === false) {
+								await (routeCtx.storage as any).messages.put(r.id, {
+									...r.data,
+									read: true,
+								});
+							}
+						}
+					} catch (err) {
+						routeCtx.log.error("emdash-inbox: failed to mark thread read", {
+							threadId,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+
 					return { items: result.items };
 				},
 			},
