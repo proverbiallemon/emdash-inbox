@@ -3,6 +3,7 @@ import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
+import { aggregateThreads, type StatusFilter } from "./lib/threadSummary";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -670,47 +671,32 @@ export function createPlugin() {
 		routes: {
 			"messages/list": {
 				handler: async (routeCtx) => {
-					// Lazy setup: EmDash v0.5.0 config-registered plugins don't fire
-					// plugin:install/activate at boot, so this is our only guaranteed
-					// hook for upgrade-time migrations and cron registration. Idempotent.
+					// Lazy setup: same idempotent migration pass as the other admin routes.
 					await ensureMigrations(routeCtx);
 
 					const input = routeCtx.input as
 						| { status?: unknown; limit?: unknown; cursor?: unknown }
 						| null;
 
-					const filter =
+					const filter: StatusFilter =
 						input?.status === "snoozed" || input?.status === "done" || input?.status === "all"
 							? input.status
 							: "inbox";
-					const limit = typeof input?.limit === "number" ? input.limit : 100;
-					const cursor = typeof input?.cursor === "string" ? input.cursor : undefined;
 
-					const sortField = filter === "snoozed" ? "snoozeUntil" : "sortAt";
-					const sortDir: "asc" | "desc" = filter === "snoozed" ? "asc" : "desc";
+					// limit / cursor accepted for API compatibility; M6 ignores them and
+					// returns all threads. Pagination is a documented pre-1.0 limitation.
+					void input?.limit;
+					void input?.cursor;
 
-					const query: any = {
-						orderBy: { [sortField]: sortDir },
-						limit,
-						cursor,
-					};
-					if (filter !== "all") {
-						query.where = { status: filter };
-					}
+					const senderAddress =
+						(await routeCtx.kv.get<string>(SETTINGS.senderAddress)) ?? "";
 
-					const result = await (routeCtx.storage as any).messages.query(query);
+					const all = await (routeCtx.storage as any).messages.query({ limit: 10000 });
+					const messages = all.items as Array<{ id: string; data: any }>;
 
-					// Post-sort: pinned rows first within the already-sorted list. EmDash
-					// storage doesn't currently support composite orderBy, so we do this
-					// client-side against the limit-sized window — fine for pre-alpha
-					// volumes; revisit if inbox grows beyond a few thousand rows.
-					const items = [...result.items].sort((a: any, b: any) => {
-						if (a.data.pinned && !b.data.pinned) return -1;
-						if (!a.data.pinned && b.data.pinned) return 1;
-						return 0;
-					});
+					const items = aggregateThreads(messages, filter, senderAddress);
 
-					return { items, cursor: result.cursor };
+					return { items, cursor: undefined };
 				},
 			},
 
