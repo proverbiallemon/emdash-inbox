@@ -84,16 +84,21 @@ function InboxPage() {
 		) => {
 			if (busyThreadIds.has(summary.id)) return;
 			setBusyThreadIds((s) => new Set(s).add(summary.id));
-			const prev = rows;
+			// Capture just this thread's pre-transform snapshot. Reverting via
+			// functional setState lets concurrent fanOut runs against OTHER threads
+			// proceed without their optimistic state being clobbered.
+			const prevSummary = summary;
 			setRows((list) => list.map((r) => (r.id === summary.id ? transform(r) : r)));
 			try {
 				const results = await Promise.allSettled(summary.messageIds.map(call));
 				const failedCount = results.filter((r) => r.status === "rejected").length;
 				if (failedCount > 0 && failedCount === summary.messageIds.length) {
-					setRows(prev);
+					setRows((curr) => curr.map((r) => (r.id === summary.id ? prevSummary : r)));
 					setError(`Failed to update thread (${failedCount}/${summary.messageIds.length} messages).`);
 				} else if (failedCount > 0) {
 					setError(`Partial update: ${failedCount}/${summary.messageIds.length} messages failed.`);
+					// Refetch to resync the UI with the partially-updated DB state.
+					void refetch(status);
 				}
 			} finally {
 				setBusyThreadIds((s) => {
@@ -103,7 +108,7 @@ function InboxPage() {
 				});
 			}
 		},
-		[rows, busyThreadIds],
+		[busyThreadIds, refetch, status],
 	);
 
 	const handlePinToggle = (summary: ThreadSummary, next: boolean) =>
