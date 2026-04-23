@@ -101,21 +101,21 @@ export function ThreadCard({ row, busy, onOpen, onPinToggle, onDone, onSnoozeReq
 					{visibleChips.map((c, i) => (
 						<span
 							key={`${c.label}-${i}`}
-							className={`inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded mr-1 align-middle ${c.isYou ? "bg-primary text-primary-foreground" : "bg-muted"}`}
+							className={`inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded mr-1 align-middle ${c.isYou ? "bg-blue-600 text-white" : "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200"}`}
 							title={c.label}
 						>
 							{c.initial}
 						</span>
 					))}
 					{overflowCount > 0 && (
-						<span className="inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded bg-muted mr-1 align-middle">
+						<span className="inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded mr-1 align-middle bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">
 							+{overflowCount}
 						</span>
 					)}
 					{namesLine}
 					{row.messageCount >= 2 && (
 						<span
-							className={`inline-block text-[10px] px-1.5 py-0.5 rounded ml-1.5 align-middle ${isUnread ? "bg-blue-600 text-white" : "bg-muted text-muted-foreground"}`}
+							className={`inline-block text-[10px] px-1.5 py-0.5 rounded ml-1.5 align-middle ${isUnread ? "bg-blue-600 text-white" : "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200"}`}
 							title={isUnread ? `${row.unreadCount} unread of ${row.messageCount}` : `${row.messageCount} messages`}
 						>
 							{row.messageCount}
