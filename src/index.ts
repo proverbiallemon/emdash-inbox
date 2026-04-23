@@ -69,6 +69,10 @@ export interface MessageDoc {
 	source: string;
 	status: MessageStatus;
 	pinned: boolean;
+	/** M6. true once the user has opened the thread containing this message.
+	 *  Inbound defaults false (just-arrived); outbound defaults true (we sent
+	 *  it). Pre-M6 rows backfill to true (already-seen). */
+	read: boolean;
 	/** M4. Null until the bundle classifier runs. */
 	bundleId: string | null;
 	/** ISO8601. Drives inbox sort order. Equals receivedAt on create;
@@ -146,6 +150,7 @@ async function persistOutbound(
 		source: event.source,
 		status: "done",
 		pinned: false,
+		read: true,   // outbound: we sent it, nothing to read
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
@@ -307,6 +312,19 @@ async function ensureMigrations(ctx: any): Promise<void> {
 		if (pass3 > 0) ctx.log.info("emdash-inbox: orphan-retry linked threads", { migrated: pass3 });
 	}
 
+	// --- Pass 4: read backfill (M6) ---
+	let pass4 = 0;
+	const allForRead = await ctx.storage.messages.query({ limit: 10000 });
+	for (const row of allForRead.items as { id: string; data: any }[]) {
+		if (typeof row.data.read === "boolean") continue;
+		await ctx.storage.messages.put(row.id, {
+			...row.data,
+			read: true,   // pre-M6 rows treated as already-seen
+		});
+		pass4++;
+	}
+	if (pass4 > 0) ctx.log.info("emdash-inbox: backfilled read", { migrated: pass4 });
+
 	// --- Cron schedule (M3; unchanged) ---
 	if (ctx.cron) {
 		await ctx.cron.schedule("wake-snoozed-messages", {
@@ -404,6 +422,7 @@ async function persistInbound(
 		source: "inbound",
 		status: "inbox",
 		pinned: false,
+		read: false,   // inbound: just arrived, user hasn't seen it
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,

@@ -69,8 +69,7 @@ export function aggregateThreads(
 			latest: latest.data,
 			previous: previous ? previous.data : null,
 			messageCount: sorted.length,
-			// Cast required until M6 Task 3 adds `read: boolean` to MessageDoc.
-			unreadCount: sorted.filter((r) => (r.data as { read?: boolean }).read === false).length,
+			unreadCount: sorted.filter((r) => r.data.read === false).length,
 			messageIds: sorted.map((r) => r.id),
 			participants: deriveParticipantChips(
 				sorted.map((r) => r.data),
