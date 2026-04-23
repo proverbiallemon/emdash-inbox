@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-04-22
+
+### Fixed
+
+- Reply form cursor now lands in a blank paragraph above the
+  quoted block. Previously the cursor sat at document start, so
+  typing prepended text to the "On <date>, <sender> wrote:"
+  attribution line.
+
+### Changed
+
+- Discard button is enabled during an in-flight send and now
+  cancels the request via `AbortController`. Label flips to
+  "Cancel send" while `sending` is true; clicking aborts the
+  fetch and closes the form immediately (no confirm prompt — the
+  user explicitly chose to abandon the send).
+
 ## [0.5.0] — 2026-04-21
 
 ### Added
@@ -64,10 +81,7 @@ per-message-in-thread actions, and: server-side HTML
 re-sanitization in the reply route (DOMPurify needs a DOM, doesn't
 run in Workers — re-add via a DOM-free sanitizer like
 `sanitize-html` via parse5 or `linkedom`-backed DOMPurify),
-abort-during-send (Discard button is currently disabled while
-sending; no `AbortController`), reply-form cursor placement
-(currently lands at document start, before the "On X wrote:"
-header), toolbar render gap (editor visible one frame before
+toolbar render gap (editor visible one frame before
 toolbar; cosmetic on fast devices), and explicit
 `@tiptap/extension-link` configuration with `openOnClick: false,
 autolink: false` (currently uses StarterKit defaults).

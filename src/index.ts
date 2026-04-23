@@ -11,7 +11,7 @@ import { deriveThreadInfo } from "./lib/threadDerive";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.5.0",
+		version: "0.5.1",
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -562,7 +562,7 @@ async function deliverEmail(
 export function createPlugin() {
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.5.0",
+		version: "0.5.1",
 
 		capabilities: [
 			"email:provide",
