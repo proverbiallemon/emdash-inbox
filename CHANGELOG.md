@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-04-23
+
+### Changed
+
+- Participant chip for outbound messages now derives from the
+  configured `senderAddress` instead of the hardcoded "Y" / "you"
+  placeholder. For `senderAddress = "PocketBear@harildkyler.com"`
+  the chip renders as "P" + "pocketbear" — visually consistent
+  with EmDash's top-right user-avatar treatment. Falls back to
+  "Y" / "you" when `senderAddress` is empty (settings
+  unconfigured).
+- The `isYou` chip gains a subtle theme-primary accent
+  (`bg-primary/20 text-primary`) so it stays distinguishable
+  from inbound participant chips at a glance.
+
+### Deferred to M7+
+
+- **Configurable `senderDisplayName` plugin setting.** Operators
+  can override the chip's label/initial explicitly (e.g. set
+  "Robert" to render "R" + "Robert" instead of the
+  local-part-derived default). Falls back to the local-part
+  behavior shipped in 0.6.1 when unset.
+
 ## [0.6.0] — 2026-04-23
 
 ### Added
