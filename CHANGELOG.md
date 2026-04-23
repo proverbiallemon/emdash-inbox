@@ -5,6 +5,115 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-04-23
+
+### Changed
+
+- Participant chip for outbound messages now derives from the
+  configured `senderAddress` instead of the hardcoded "Y" / "you"
+  placeholder. For `senderAddress = "PocketBear@harildkyler.com"`
+  the chip renders as "P" + "pocketbear" — visually consistent
+  with EmDash's top-right user-avatar treatment. Falls back to
+  "Y" / "you" when `senderAddress` is empty (settings
+  unconfigured).
+- The `isYou` chip gains a subtle theme-primary accent
+  (`bg-primary/20 text-primary`) so it stays distinguishable
+  from inbound participant chips at a glance.
+
+### Deferred to M7+
+
+- **Configurable `senderDisplayName` plugin setting.** Operators
+  can override the chip's label/initial explicitly (e.g. set
+  "Robert" to render "R" + "Robert" instead of the
+  local-part-derived default). Falls back to the local-part
+  behavior shipped in 0.6.1 when unset.
+
+## [0.6.0] — 2026-04-23
+
+### Added
+
+- Thread-grouping in the inbox list. Messages now collapse to one
+  card per `threadId`. Each card shows participant chips
+  (initial + name list), a message-count badge (highlighted blue
+  if any unread, muted gray if all read with count ≥ 2, hidden
+  for single-message threads), the latest message's snippet, and
+  — when the thread has ≥ 2 messages — a faded second snippet line
+  `↳ <prev sender> · <preview>`. Bold subject treatment for
+  threads with any unread messages.
+- Per-message read state (`MessageDoc.read: boolean`). Inbound
+  defaults `false`, outbound defaults `true`. Pre-0.6.0 rows
+  backfill to `read: true` via a 4th pass in `ensureMigrations`
+  (idempotent, lazy-runs on every route invocation).
+- Auto-mark-read on thread open. The `messages/thread` route
+  marks every message in the thread `read: true` as a side
+  effect of the fetch. Failure to write read-state does NOT
+  fail the fetch (logged + swallowed, same defensive pattern as
+  `persistOutbound` failure inside `deliverEmail`).
+- Latest-message-wins filter behavior. A thread's tab placement
+  is decided by `latest.status`, not by per-message status. A
+  thread you marked "done" pops back to the inbox tab the moment
+  a new inbound arrives. Old messages keep their original status;
+  they just don't drive thread placement.
+- Two new pure-logic modules with vitest coverage:
+  `participantChips` (5 tests) and `threadSummary` (10 tests).
+  Test count: 55 → 71 passing (+1 polish coverage for the new
+  `bucketize` accessor branch).
+- New admin component `<ThreadCard>` (replaces `<MessageCard>`).
+  Hover Done / Snooze actions and pin toggle fan out across
+  every message in the thread, matching `<ThreadView>`'s M4 bulk-
+  action pattern. Per-thread `busy` flag prevents racing rollback;
+  partial-failure refetches the inbox list to resync UI with the
+  partially-updated DB.
+- `messages/list` route response shape changes from
+  `Array<{ id, data: MessageDoc }>` to
+  `Array<ThreadSummary>` (full shape documented in
+  `src/lib/threadSummary.ts`). `limit` and `cursor` parameters
+  still accepted but ignored — see "Known limitations" below.
+- `bucketize` generalized to accept either a string field name
+  (legacy) or a `(row) => string | null | undefined` accessor.
+  Lets `<DateBuckets>` work with the new `<ThreadSummary>` shape
+  (top-level `sortAt`/`snoozeUntil` fields) without forcing the
+  ThreadSummary shape to mimic the old `{ id, data: ... }` row
+  envelope.
+
+### Changed
+
+- `<MessageCard>` removed (dead code now that `messages/list`
+  returns thread summaries).
+
+### Known limitations
+
+- **Inbox list aggregation is in-memory.** The `messages/list`
+  route fetches all messages and aggregates threads client-side
+  on every request. Acceptable for personal mailboxes
+  (<5K messages); revisit before v1.0 / plugin marketplace
+  listing if running at higher volumes. Above ~10K messages
+  expect noticeable list-load latency. `cursor` and `limit`
+  parameters are reserved in the route contract for future
+  pagination.
+
+### Deferred to M7+
+
+Pagination for `messages/list` (concrete trigger above), "mark
+thread unread" affordance (M6 only auto-marks read on open,
+no manual reverse), per-message read indicators inside
+`<ThreadView>` (M6 marks the whole thread read on open;
+individual message read-state isn't surfaced visually), "show
+only unread" filter tab, server-side `groupBy` /
+denormalized thread-summary table, read-state webhook for
+inbound, shared `fanOut` hook between list and ThreadView,
+deprecation of the legacy `bucketize` string-field branch,
+single-message thread chip suppression. Plus carry-overs from
+M5: reply-all / CC / BCC, compose-from-scratch, draft
+persistence, signatures, attachments, collapsible quoted text,
+toast undo, standalone reminders collection, bundles / AI sort,
+References-chain on outbound, iframe sandboxing for inbound
+HTML, quote-stripping on inbound display, per-message-in-thread
+actions, server-side HTML re-sanitization (`linkedom` /
+`sanitize-html`), toolbar render gap, and explicit
+`@tiptap/extension-link.configure({ openOnClick: false,
+autolink: false })`.
+
 ## [0.5.1] — 2026-04-22
 
 ### Fixed

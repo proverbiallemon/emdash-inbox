@@ -59,3 +59,19 @@ describe("bucketize (future direction, for Snoozed tab)", () => {
 		expect(result.older.map((r) => r.id)).toEqual(["far-future"]);
 	});
 });
+
+describe("bucketize (function accessor)", () => {
+	it("supports function accessor for top-level fields", () => {
+		interface FlatRow {
+			id: string;
+			sortAt: string;
+		}
+		const flatRows: FlatRow[] = [
+			{ id: "a", sortAt: new Date(2026, 3, 23, 10, 0, 0).toISOString() }, // today
+			{ id: "b", sortAt: new Date(2026, 3, 22, 18, 0, 0).toISOString() }, // yesterday
+		];
+		const result = bucketize(flatRows, (r) => r.sortAt, NOW, "past");
+		expect(result.today.map((r) => r.id)).toEqual(["a"]);
+		expect(result.yesterday.map((r) => r.id)).toEqual(["b"]);
+	});
+});

@@ -11,9 +11,9 @@ function startOfDay(d: Date): number {
 	return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
-export function bucketize<T extends { data: Record<string, any> }>(
+export function bucketize<T>(
 	rows: T[],
-	field: string,
+	field: string | ((row: T) => string | null | undefined),
 	now: Date,
 	direction: Direction,
 ): Buckets<T> {
@@ -22,8 +22,13 @@ export function bucketize<T extends { data: Record<string, any> }>(
 
 	const out: Buckets<T> = { today: [], yesterday: [], thisWeek: [], older: [] };
 
+	const getValue =
+		typeof field === "function"
+			? field
+			: (r: T) => (r as unknown as { data: Record<string, unknown> }).data[field] as string | undefined;
+
 	for (const row of rows) {
-		const iso = row.data[field] as string | undefined;
+		const iso = getValue(row) as string | undefined;
 		if (!iso) continue;
 		const t = Date.parse(iso);
 		if (Number.isNaN(t)) continue;

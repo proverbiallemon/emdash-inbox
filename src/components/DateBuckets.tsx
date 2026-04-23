@@ -3,7 +3,8 @@ import { bucketize, type Direction } from "../lib/bucketize";
 
 interface Row {
 	id: string;
-	data: { sortAt: string; snoozeUntil: string | null };
+	sortAt: string;
+	snoozeUntil: string | null;
 }
 
 interface Props<T extends Row> {
@@ -21,7 +22,7 @@ export function DateBuckets<T extends Row>({
 	now,
 	renderRow,
 }: Props<T>) {
-	const buckets = bucketize(rows, field, now ?? new Date(), direction);
+	const buckets = bucketize(rows, (r) => r[field], now ?? new Date(), direction);
 
 	const sections: { label: string; rows: T[] }[] = [
 		{ label: "Today", rows: buckets.today },

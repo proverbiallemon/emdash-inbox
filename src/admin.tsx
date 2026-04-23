@@ -2,7 +2,8 @@ import type { PluginAdminExports } from "emdash";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 import { FilterTabs, type StatusFilter } from "./components/FilterTabs";
-import { MessageCard, type MessageCardRow } from "./components/MessageCard";
+import { ThreadCard } from "./components/ThreadCard";
+import type { ThreadSummary } from "./lib/threadSummary";
 import { SnoozePicker } from "./components/SnoozePicker";
 import { DateBuckets } from "./components/DateBuckets";
 import { EmptyState } from "./components/EmptyState";
@@ -36,10 +37,11 @@ function writeUrl(status: StatusFilter, messageId: string | null) {
 function InboxPage() {
 	const [status, setStatus] = React.useState<StatusFilter>(readStatusFromUrl);
 	const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(readMessageFromUrl);
-	const [rows, setRows] = React.useState<MessageCardRow[]>([]);
+	const [rows, setRows] = React.useState<ThreadSummary[]>([]);
 	const [loading, setLoading] = React.useState(true);
 	const [error, setError] = React.useState<string | null>(null);
-	const [snoozingId, setSnoozingId] = React.useState<string | null>(null);
+	const [snoozingThread, setSnoozingThread] = React.useState<ThreadSummary | null>(null);
+	const [busyThreadIds, setBusyThreadIds] = React.useState<Set<string>>(new Set());
 	const debug = React.useMemo(readDebugFromUrl, []);
 
 	const refetch = React.useCallback(async (forStatus: StatusFilter) => {
@@ -51,7 +53,7 @@ function InboxPage() {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ status: forStatus }),
 			});
-			const data = await parseApiResponse<{ items: MessageCardRow[] }>(
+			const data = await parseApiResponse<{ items: ThreadSummary[] }>(
 				res,
 				"Failed to load messages",
 			);
@@ -68,61 +70,93 @@ function InboxPage() {
 		if (!selectedMessageId) void refetch(status);
 	}, [status, selectedMessageId, refetch]);
 
-	const handleOpen = (id: string) => setSelectedMessageId(id);
+	const handleOpen = (openMessageId: string) => setSelectedMessageId(openMessageId);
 	const handleBack = () => setSelectedMessageId(null);
 
-	const handlePinToggle = async (id: string, next: boolean) => {
-		setRows((prev) =>
-			prev.map((r) => (r.id === id ? { ...r, data: { ...r.data, pinned: next } } : r)),
-		);
-		try {
-			await apiFetch(`${API}/messages/pin`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ id, pinned: next }),
-			});
-		} catch (err) {
-			setRows((prev) =>
-				prev.map((r) => (r.id === id ? { ...r, data: { ...r.data, pinned: !next } } : r)),
-			);
-			setError(err instanceof Error ? err.message : String(err));
-		}
-	};
+	// Fan out a thread-scope action across summary.messageIds. Optimistic UI
+	// (apply transform immediately), then run the per-message API calls in
+	// parallel; revert just the thread on full failure.
+	const fanOut = React.useCallback(
+		async (
+			summary: ThreadSummary,
+			transform: (s: ThreadSummary) => ThreadSummary,
+			call: (messageId: string) => Promise<void>,
+		) => {
+			if (busyThreadIds.has(summary.id)) return;
+			setBusyThreadIds((s) => new Set(s).add(summary.id));
+			// Capture just this thread's pre-transform snapshot. Reverting via
+			// functional setState lets concurrent fanOut runs against OTHER threads
+			// proceed without their optimistic state being clobbered.
+			const prevSummary = summary;
+			setRows((list) => list.map((r) => (r.id === summary.id ? transform(r) : r)));
+			try {
+				const results = await Promise.allSettled(summary.messageIds.map(call));
+				const failedCount = results.filter((r) => r.status === "rejected").length;
+				if (failedCount > 0 && failedCount === summary.messageIds.length) {
+					setRows((curr) => curr.map((r) => (r.id === summary.id ? prevSummary : r)));
+					setError(`Failed to update thread (${failedCount}/${summary.messageIds.length} messages).`);
+				} else if (failedCount > 0) {
+					setError(`Partial update: ${failedCount}/${summary.messageIds.length} messages failed.`);
+					// Refetch to resync the UI with the partially-updated DB state.
+					void refetch(status);
+				}
+			} finally {
+				setBusyThreadIds((s) => {
+					const next = new Set(s);
+					next.delete(summary.id);
+					return next;
+				});
+			}
+		},
+		[busyThreadIds, refetch, status],
+	);
 
-	const handleDone = async (id: string) => {
-		const prev = rows;
-		setRows((list) => list.filter((r) => r.id !== id));
-		try {
-			await apiFetch(`${API}/messages/status`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ id, status: "done" }),
-			});
-		} catch (err) {
-			setRows(prev);
-			setError(err instanceof Error ? err.message : String(err));
-		}
-	};
+	const handlePinToggle = (summary: ThreadSummary, next: boolean) =>
+		fanOut(
+			summary,
+			(s) => ({ ...s, pinned: next }),
+			async (id) => {
+				const res = await apiFetch(`${API}/messages/pin`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ id, pinned: next }),
+				});
+				if (!res.ok) throw new Error(`pin ${id} failed (${res.status})`);
+			},
+		);
+
+	const handleDone = (summary: ThreadSummary) =>
+		fanOut(
+			summary,
+			(s) => ({ ...s, latest: { ...s.latest, status: "done" } }),
+			async (id) => {
+				const res = await apiFetch(`${API}/messages/status`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ id, status: "done" }),
+				});
+				if (!res.ok) throw new Error(`status ${id} failed (${res.status})`);
+			},
+		);
 
 	const handleSnoozeConfirm = async (iso: string) => {
-		const id = snoozingId;
-		setSnoozingId(null);
-		if (!id) return;
-		const prev = rows;
-		setRows((list) => list.filter((r) => r.id !== id));
-		try {
-			await apiFetch(`${API}/messages/status`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ id, status: "snoozed", snoozeUntil: iso }),
-			});
-		} catch (err) {
-			setRows(prev);
-			setError(err instanceof Error ? err.message : String(err));
-		}
+		const summary = snoozingThread;
+		setSnoozingThread(null);
+		if (!summary) return;
+		await fanOut(
+			summary,
+			(s) => ({ ...s, latest: { ...s.latest, status: "snoozed", snoozeUntil: iso } }),
+			async (id) => {
+				const res = await apiFetch(`${API}/messages/status`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ id, status: "snoozed", snoozeUntil: iso }),
+				});
+				if (!res.ok) throw new Error(`snooze ${id} failed (${res.status})`);
+			},
+		);
 	};
 
-	// Thread view takes precedence.
 	if (selectedMessageId) {
 		return (
 			<div className="space-y-6">
@@ -162,21 +196,22 @@ function InboxPage() {
 						field={bucketField}
 						direction={bucketDirection}
 						renderRow={(row) => (
-							<MessageCard
+							<ThreadCard
 								key={row.id}
 								row={row}
+								busy={busyThreadIds.has(row.id)}
 								onOpen={handleOpen}
 								onPinToggle={handlePinToggle}
 								onDone={handleDone}
-								onSnoozeRequest={(id) => setSnoozingId(id)}
+								onSnoozeRequest={(s) => setSnoozingThread(s)}
 							/>
 						)}
 					/>
-					{snoozingId && (
+					{snoozingThread && (
 						<SnoozePicker
 							debug={debug}
 							onConfirm={handleSnoozeConfirm}
-							onCancel={() => setSnoozingId(null)}
+							onCancel={() => setSnoozingThread(null)}
 						/>
 					)}
 				</div>

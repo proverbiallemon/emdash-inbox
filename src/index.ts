@@ -3,6 +3,7 @@ import type { PluginDescriptor } from "emdash";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
+import { aggregateThreads, type StatusFilter } from "./lib/threadSummary";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -11,7 +12,7 @@ import { deriveThreadInfo } from "./lib/threadDerive";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.5.1",
+		version: "0.6.1",
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -69,6 +70,10 @@ export interface MessageDoc {
 	source: string;
 	status: MessageStatus;
 	pinned: boolean;
+	/** M6. true once the user has opened the thread containing this message.
+	 *  Inbound defaults false (just-arrived); outbound defaults true (we sent
+	 *  it). Pre-M6 rows backfill to true (already-seen). */
+	read: boolean;
 	/** M4. Null until the bundle classifier runs. */
 	bundleId: string | null;
 	/** ISO8601. Drives inbox sort order. Equals receivedAt on create;
@@ -146,6 +151,7 @@ async function persistOutbound(
 		source: event.source,
 		status: "done",
 		pinned: false,
+		read: true,   // outbound: we sent it, nothing to read
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
@@ -307,6 +313,19 @@ async function ensureMigrations(ctx: any): Promise<void> {
 		if (pass3 > 0) ctx.log.info("emdash-inbox: orphan-retry linked threads", { migrated: pass3 });
 	}
 
+	// --- Pass 4: read backfill (M6) ---
+	let pass4 = 0;
+	const allForRead = await ctx.storage.messages.query({ limit: 10000 });
+	for (const row of allForRead.items as { id: string; data: any }[]) {
+		if (typeof row.data.read === "boolean") continue;
+		await ctx.storage.messages.put(row.id, {
+			...row.data,
+			read: true,   // pre-M6 rows treated as already-seen
+		});
+		pass4++;
+	}
+	if (pass4 > 0) ctx.log.info("emdash-inbox: backfilled read", { migrated: pass4 });
+
 	// --- Cron schedule (M3; unchanged) ---
 	if (ctx.cron) {
 		await ctx.cron.schedule("wake-snoozed-messages", {
@@ -404,6 +423,7 @@ async function persistInbound(
 		source: "inbound",
 		status: "inbox",
 		pinned: false,
+		read: false,   // inbound: just arrived, user hasn't seen it
 		bundleId: null,
 		sortAt: now,
 		snoozeUntil: null,
@@ -562,7 +582,7 @@ async function deliverEmail(
 export function createPlugin() {
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.5.1",
+		version: "0.6.1",
 
 		capabilities: [
 			"email:provide",
@@ -651,47 +671,32 @@ export function createPlugin() {
 		routes: {
 			"messages/list": {
 				handler: async (routeCtx) => {
-					// Lazy setup: EmDash v0.5.0 config-registered plugins don't fire
-					// plugin:install/activate at boot, so this is our only guaranteed
-					// hook for upgrade-time migrations and cron registration. Idempotent.
+					// Lazy setup: same idempotent migration pass as the other admin routes.
 					await ensureMigrations(routeCtx);
 
 					const input = routeCtx.input as
 						| { status?: unknown; limit?: unknown; cursor?: unknown }
 						| null;
 
-					const filter =
+					const filter: StatusFilter =
 						input?.status === "snoozed" || input?.status === "done" || input?.status === "all"
 							? input.status
 							: "inbox";
-					const limit = typeof input?.limit === "number" ? input.limit : 100;
-					const cursor = typeof input?.cursor === "string" ? input.cursor : undefined;
 
-					const sortField = filter === "snoozed" ? "snoozeUntil" : "sortAt";
-					const sortDir: "asc" | "desc" = filter === "snoozed" ? "asc" : "desc";
+					// limit / cursor accepted for API compatibility; M6 ignores them and
+					// returns all threads. Pagination is a documented pre-1.0 limitation.
+					void input?.limit;
+					void input?.cursor;
 
-					const query: any = {
-						orderBy: { [sortField]: sortDir },
-						limit,
-						cursor,
-					};
-					if (filter !== "all") {
-						query.where = { status: filter };
-					}
+					const senderAddress =
+						(await routeCtx.kv.get<string>(SETTINGS.senderAddress)) ?? "";
 
-					const result = await (routeCtx.storage as any).messages.query(query);
+					const all = await (routeCtx.storage as any).messages.query({ limit: 10000 });
+					const messages = all.items as Array<{ id: string; data: any }>;
 
-					// Post-sort: pinned rows first within the already-sorted list. EmDash
-					// storage doesn't currently support composite orderBy, so we do this
-					// client-side against the limit-sized window — fine for pre-alpha
-					// volumes; revisit if inbox grows beyond a few thousand rows.
-					const items = [...result.items].sort((a: any, b: any) => {
-						if (a.data.pinned && !b.data.pinned) return -1;
-						if (!a.data.pinned && b.data.pinned) return 1;
-						return 0;
-					});
+					const items = aggregateThreads(messages, filter, senderAddress);
 
-					return { items, cursor: result.cursor };
+					return { items, cursor: undefined };
 				},
 			},
 
@@ -785,6 +790,27 @@ export function createPlugin() {
 						orderBy: { receivedAt: "asc" },
 						limit: 500,
 					});
+
+					// Side-effect: mark every unread message in this thread read. Wrapped so a
+					// write failure doesn't fail the fetch — same defensive pattern as
+					// persistOutbound inside deliverEmail. Returned items are the pre-write
+					// snapshot; the inbox list re-fetches on back-navigation and sees the
+					// updated state.
+					try {
+						for (const r of result.items as { id: string; data: any }[]) {
+							if (r.data.read === false) {
+								await (routeCtx.storage as any).messages.put(r.id, {
+									...r.data,
+									read: true,
+								});
+							}
+						}
+					} catch (err) {
+						routeCtx.log.error("emdash-inbox: failed to mark thread read", {
+							threadId,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 
 					return { items: result.items };
 				},
