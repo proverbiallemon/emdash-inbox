@@ -5,6 +5,88 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-15
+
+### Changed
+
+- Outbound delivery now goes through the native Cloudflare Email
+  Sending Workers binding (`env.EMAIL.send()`) instead of the
+  `accounts/{id}/email/sending/send` REST endpoint. Operators no
+  longer mint or paste a Cloudflare API token; the binding handles
+  auth implicitly via the host Worker's CF account.
+- Plugin settings reduced to `senderAddress` + `inboundSecret`. The
+  `accountId` and `apiToken` fields are gone. A 5th pass in
+  `ensureMigrations` idempotently clears stale `kv` rows from
+  earlier installs on first request after upgrade.
+- Capability surface tightened. `network:fetch` and the
+  `allowedHosts: ["api.cloudflare.com"]` allow-list dropped — the
+  plugin no longer makes any outbound HTTP requests.
+
+### Added
+
+- New admin-auth route `messages/mcp` exposing an MCP (Model
+  Context Protocol) server over JSON-RPC 2.0 with 7 inbox tools:
+  `list_threads`, `get_thread`, `search_messages`, `mark_read`,
+  `pin_thread`, `snooze_thread`, `mark_done`. Built on
+  `@modelcontextprotocol/sdk` with per-tool `zod` input schemas;
+  arguments validated before dispatch. The tool catalog
+  (`inboxMcpTools.ts`) is decoupled from execution
+  (`inboxMcpHandlers.ts`) so the catalog stays test-friendly
+  without a DB or ctx.
+- Two new pure-logic modules with vitest coverage: `cfBindingError`
+  (5 tests — typed `EmailBinding` interface, `DeliverError` class,
+  and `wrapBindingError()` that maps known binding failure codes to
+  operator-actionable text) and `inboxMcpTools` (5 tests — tool
+  catalog + zod schema validation). Test count: 71 to 82.
+
+### Operator setup changes
+
+- Add a `send_email` binding to your host's `wrangler.jsonc`:
+  ```jsonc
+  "send_email": [
+    { "name": "EMAIL", "remote": true }
+  ]
+  ```
+- Onboard your sender domain to Cloudflare Email Sending
+  (Dashboard -> Compute & AI -> Email Service -> Email Sending ->
+  Onboard Domain), if you haven't already.
+- The plugin settings page no longer asks for `accountId` /
+  `apiToken`. Existing installs see those rows cleared
+  automatically on first request after the upgrade.
+
+### Known limitations
+
+- Plugin route responses are wrapped in EmDash's `{"data": ...}`
+  envelope by the host's plugin dispatcher; there's no escape
+  hatch for raw response bodies in EmDash 0.12. MCP clients that
+  consume raw JSON-RPC (Claude Code, Cursor's HTTP MCP transport)
+  won't currently parse responses from the `messages/mcp` route
+  directly. The route works end-to-end via `curl` (verified);
+  full client integration is pending upstream support for raw
+  response bodies on plugin routes.
+- Multi-provider inbox observation via `email:intercept` is still
+  deferred. EmDash's `email:afterSend` hook is fire-and-forget on
+  Cloudflare Workers (DB writes there hang as the request context
+  tears down), so outbound persistence stays inline inside
+  `email:deliver` and only runs when this plugin is the active
+  provider. Multi-provider observation needs either an upstream
+  `email:afterSend` that awaits or a different intercept
+  primitive.
+
+### Deferred to M8+
+
+- Compose-from-scratch + reply-all + CC / BCC, drafts,
+  signatures, attachments. The binding migration in this release
+  unblocks attachments + arbitrary headers; surfacing them in the
+  UI is the next milestone's work.
+- Direct AI-client integration for the MCP route (Claude Code,
+  Cursor). Blocked on upstream raw-response support; a small Astro
+  proxy route that unwraps the envelope is one workaround for
+  early adopters and is not shipped in this release.
+- Pagination for `messages/list` (concrete trigger documented in
+  the 0.6.0 entry), toast undo, mark-thread-unread, "show only
+  unread" filter tab. All carrying over from M6.
+
 ## [0.6.1] — 2026-04-23
 
 ### Changed

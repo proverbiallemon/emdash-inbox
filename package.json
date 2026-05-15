@@ -1,17 +1,17 @@
 {
 	"name": "emdash-inbox",
-	"version": "0.6.1",
-	"description": "Cloudflare Email Service transport and Inbox-by-Google-style mailbox UI for EmDash CMS",
+	"version": "0.7.0",
+	"description": "Inbox-by-Google-style mailbox UI for EmDash CMS, with Cloudflare Email Service transport built in",
 	"keywords": [
 		"emdash",
 		"emdash-plugin",
-		"cms",
-		"email",
-		"inbox",
 		"mailbox",
-		"cloudflare",
+		"inbox",
+		"email",
+		"cms",
+		"cloudflare-email",
 		"cloudflare-workers",
-		"cloudflare-email"
+		"cloudflare"
 	],
 	"license": "Apache-2.0",
 	"repository": {
@@ -61,10 +61,12 @@
 		"vitest": "^4.1.4"
 	},
 	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@tiptap/pm": "^3.22.4",
 		"@tiptap/react": "^3.22.4",
 		"@tiptap/starter-kit": "^3.22.4",
 		"dompurify": "^3.4.0",
-		"postal-mime": "^2.7.4"
+		"postal-mime": "^2.7.4",
+		"zod": "^4.4.3"
 	}
 }

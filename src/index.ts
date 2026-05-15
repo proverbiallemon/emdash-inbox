@@ -1,5 +1,6 @@
 import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
+import { DeliverError, wrapBindingError, type EmailBinding } from "./lib/cfBindingError";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
@@ -12,7 +13,7 @@ import { aggregateThreads, type StatusFilter } from "./lib/threadSummary";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.6.1",
+		version: "0.7.0",
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -22,14 +23,9 @@ export function emdashInboxPlugin(): PluginDescriptor {
 }
 
 const SETTINGS = {
-	accountId: "settings:accountId",
-	apiToken: "settings:apiToken",
 	senderAddress: "settings:senderAddress",
 	inboundSecret: "settings:inboundSecret",
 } as const;
-
-const CF_SEND_ENDPOINT = (accountId: string) =>
-	`https://api.cloudflare.com/client/v4/accounts/${accountId}/email/sending/send`;
 
 /**
  * Storage collections. Each document is an arbitrary JSON blob; declared fields
@@ -326,6 +322,20 @@ async function ensureMigrations(ctx: any): Promise<void> {
 	}
 	if (pass4 > 0) ctx.log.info("emdash-inbox: backfilled read", { migrated: pass4 });
 
+	// --- Pass 5 (M7): drop stale REST-era settings rows ---
+	// Idempotent — ctx.kv.delete is a no-op on missing keys. Lazy-runs every
+	// route invocation; cheap. Removes the accountId/apiToken rows that
+	// pre-M7 installs left behind when the plugin used the CF Email Service
+	// REST API; the binding migration no longer reads them.
+	try {
+		await ctx.kv.delete("settings:accountId");
+		await ctx.kv.delete("settings:apiToken");
+	} catch (err) {
+		ctx.log.warn("emdash-inbox: pass 5 (drop REST settings) failed", {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+
 	// --- Cron schedule (M3; unchanged) ---
 	if (ctx.cron) {
 		await ctx.cron.schedule("wake-snoozed-messages", {
@@ -458,26 +468,17 @@ async function persistInbound(
 }
 
 /**
- * Errors thrown by `deliverEmail` for known classified failure modes (missing
- * settings, transport rejection, configuration gap). Distinguishable by the
- * route caller from generic JS errors so it can surface the message verbatim
- * via `PluginRouteError.badRequest` — emdash strips messages from
- * `PluginRouteError.internal` on the wire, so unknown errors get a generic
- * code while these get the operator-actionable text.
- */
-class DeliverError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "DeliverError";
-	}
-}
-
-/**
- * Deliver one outbound email via the Cloudflare Email Service REST API and
- * persist the outbound row inline. Shared between the `email:deliver` plugin
- * hook (called by emdash for any plugin invoking ctx.email.send) and the
- * `messages/reply` route (called from the admin compose form — `ctx.email` is
- * undefined on plugin route contexts in emdash v0.5.0, same gap as ctx.cron).
+ * Deliver one outbound email via the Cloudflare Email Sending native Workers
+ * binding (`env.EMAIL.send()`) and persist the outbound row inline. Shared
+ * between the `email:deliver` plugin hook (called by emdash for any plugin
+ * invoking ctx.email.send) and the `messages/reply` route (called from the
+ * admin compose form).
+ *
+ * Binding access: dynamic `await import('cloudflare:workers')` rather than
+ * a static import — keeps the dependency on the Workers runtime lazy so
+ * module evaluation works in non-Workers contexts (vitest, etc.); only the
+ * handler firing requires the runtime. Mirrors the pattern used by other
+ * CF Email Sending plugins (e.g. @coastweb/emdash-plugin-cloudflare-email).
  *
  * Persistence runs inline (not via `email:afterSend`) — emdash doesn't await
  * afterSend on Workers, so DB writes there hang as the request context tears
@@ -495,30 +496,35 @@ async function deliverEmail(
 		source: string;
 	},
 ): Promise<void> {
-	if (!ctx.http) {
-		throw new DeliverError(
-			"emdash-inbox: ctx.http unavailable — network:fetch capability not granted",
-		);
-	}
-
 	const kv = ctx.kv as { get<T>(key: string): Promise<T | null> };
-	const [accountId, apiToken, senderAddress] = await Promise.all([
-		kv.get<string>(SETTINGS.accountId),
-		kv.get<string>(SETTINGS.apiToken),
-		kv.get<string>(SETTINGS.senderAddress),
-	]);
+	const senderAddress = await kv.get<string>(SETTINGS.senderAddress);
 
-	const missing: string[] = [];
-	if (!accountId) missing.push("accountId");
-	if (!apiToken) missing.push("apiToken");
-	if (!senderAddress) missing.push("senderAddress");
-	if (missing.length > 0) {
+	if (!senderAddress) {
 		throw new DeliverError(
-			`emdash-inbox: cannot deliver email — missing settings: ${missing.join(", ")}. Configure in Admin → emdash-inbox → Settings.`,
+			"emdash-inbox: cannot deliver email — missing settings: senderAddress. Configure in Admin → emdash-inbox → Settings.",
 		);
 	}
 
-	const payload: Record<string, unknown> = {
+	// Reach the Workers binding via dynamic import. Keeps the dependency on the
+	// Workers runtime lazy — module evaluation works in non-Workers contexts
+	// (vitest, etc.); only the handler firing requires the runtime.
+	let binding: EmailBinding;
+	try {
+		const { env } = await import("cloudflare:workers");
+		const candidate = (env as Record<string, unknown>).EMAIL;
+		if (!candidate || typeof (candidate as { send?: unknown }).send !== "function") {
+			const bindingMissingErr = new Error("EMAIL binding missing or malformed");
+			(bindingMissingErr as Error & { code: string }).code = "EMAIL_BINDING_MISSING";
+			throw bindingMissingErr;
+		}
+		binding = candidate as EmailBinding;
+	} catch (err) {
+		throw new DeliverError(
+			`emdash-inbox: env.EMAIL binding unavailable — check wrangler.jsonc has send_email[{name:"EMAIL"}]. (${err instanceof Error ? err.message : String(err)})`,
+		);
+	}
+
+	const payload: Parameters<EmailBinding["send"]>[0] = {
 		to: event.message.to,
 		from: senderAddress,
 		subject: event.message.subject,
@@ -531,36 +537,28 @@ async function deliverEmail(
 		};
 	}
 
-	const response = await ctx.http.fetch(CF_SEND_ENDPOINT(accountId!), {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${apiToken}`,
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify(payload),
-	});
-
-	if (!response.ok) {
-		const body = await response.text();
-		ctx.log.error("emdash-inbox: CF Email Service rejected send", {
-			status: response.status,
-			body,
+	let result: Awaited<ReturnType<EmailBinding["send"]>>;
+	try {
+		result = await binding.send(payload);
+	} catch (err) {
+		const wrapped = wrapBindingError(err);
+		ctx.log.error("emdash-inbox: CF Email binding rejected send", {
+			error: wrapped.message,
 			to: event.message.to,
 			source: event.source,
 		});
-		throw new DeliverError(
-			`emdash-inbox: CF Email Service returned ${response.status}`,
-		);
+		throw wrapped;
 	}
 
 	ctx.log.info("emdash-inbox: delivered", {
 		to: event.message.to,
 		subject: event.message.subject,
 		source: event.source,
+		messageId: result.messageId,
 	});
 
 	try {
-		await persistOutbound(ctx, event, senderAddress!);
+		await persistOutbound(ctx, event, senderAddress);
 	} catch (err) {
 		ctx.log.error("emdash-inbox: failed to persist outbound", {
 			to: event.message.to,
@@ -572,25 +570,27 @@ async function deliverEmail(
 /**
  * Plugin definition — runs on the deployed server at request time.
  *
- * Transport choice: we POST to the Cloudflare Email Service REST API rather
- * than binding `env.SEND_EMAIL`. EmDash v0.5.0's plugin context does not
- * expose host Cloudflare env bindings to hooks, so the REST path (token in
- * `ctx.kv` + `ctx.http.fetch`) is the only way for a plugin to deliver via
- * CF Email Service today. Swapping to the binding later is a single-site
- * change in the `email:deliver` handler.
+ * Transport: outbound delivery flows through the native Cloudflare Email
+ * Sending Workers binding (`env.EMAIL.send()`), reached via dynamic
+ * `await import("cloudflare:workers")` inside `deliverEmail()`. EmDash's
+ * `PluginContext` still doesn't expose host env bindings, but the Workers
+ * runtime provides the same `env` as a module-level import — the dynamic
+ * variant keeps the dependency on the Workers runtime lazy so module
+ * evaluation works in non-Workers contexts (vitest, etc.).
+ *
+ * Pre-M7 we POSTed to the CF Email Service REST API with an operator-
+ * minted API token. M7 dropped that path entirely; the binding handles
+ * auth implicitly via the Worker's CF account.
  */
 export function createPlugin() {
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.6.1",
+		version: "0.7.0",
 
 		capabilities: [
 			"email:provide",
 			"email:intercept",
-			"network:fetch",
 		],
-
-		allowedHosts: ["api.cloudflare.com"],
 
 		storage: {
 			messages: {
@@ -873,6 +873,19 @@ export function createPlugin() {
 				},
 			},
 
+			"messages/mcp": {
+				// Admin-auth (default) — EmDash gates the route on session cookie
+				// or Bearer API token before this handler fires. The MCP wire
+				// dispatcher itself is auth-agnostic; it trusts that anyone who
+				// reaches it has full inbox access. See `lib/inboxMcpHandlers.ts`
+				// for the choice of manual JSON-RPC dispatch over the SDK runtime.
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const { dispatchMcpRequest } = await import("./lib/inboxMcpHandlers");
+					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {});
+				},
+			},
+
 			inbound: {
 				public: true,
 				handler: async (routeCtx) => {
@@ -933,23 +946,11 @@ export function createPlugin() {
 			// settingsSchema defaults are not materialized automatically by EmDash;
 			// the hook above validates presence at send time and throws if missing.
 			settingsSchema: {
-				accountId: {
-					type: "string",
-					label: "Cloudflare account ID",
-					description:
-						"Find this in your Cloudflare dashboard URL or on the account home page.",
-				},
-				apiToken: {
-					type: "secret",
-					label: "Cloudflare API token (Email Sending scope)",
-					description:
-						"Create at dash.cloudflare.com → My Profile → API Tokens → Create Token, with permission: Account → Email Sending → Send.",
-				},
 				senderAddress: {
 					type: "string",
 					label: "Verified sender address",
 					description:
-						"Must be a sender you have verified in Cloudflare Email Service (e.g. hello@yourdomain.com).",
+						"Must be a sender on a domain you have onboarded to Cloudflare Email Sending (e.g. hello@yourdomain.com). Onboard at Dashboard → Compute & AI → Email Service → Email Sending → Onboard Domain.",
 				},
 				inboundSecret: {
 					type: "secret",
