@@ -28,7 +28,7 @@ export interface InboxToolDef<TInput extends z.ZodType = z.ZodType> {
 	inputSchema: TInput;
 }
 
-const statusSchema = z.enum(["inbox", "snoozed", "done", "archived"]);
+const statusSchema = z.enum(["inbox", "snoozed", "done"]);
 
 const listThreadsInput = z.object({
 	status: statusSchema.optional().describe("Filter by status. Defaults to 'inbox'."),
@@ -68,7 +68,7 @@ export function listInboxTools(): InboxToolDef[] {
 		{
 			name: "list_threads",
 			description:
-				"List threads in the inbox, optionally filtered by status (inbox/snoozed/done/archived). Returns thread summaries (id, latest sender, subject, snippet, unread count, message count, sortAt).",
+				"List threads in the inbox, optionally filtered by status (inbox/snoozed/done). Returns thread summaries (id, latest sender, subject, snippet, unread count, message count, sortAt).",
 			inputSchema: listThreadsInput,
 		},
 		{

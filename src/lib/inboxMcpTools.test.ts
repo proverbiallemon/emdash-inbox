@@ -36,6 +36,7 @@ describe("listInboxTools", () => {
 		expect(() => tool.inputSchema.parse({})).not.toThrow();
 		expect(() => tool.inputSchema.parse({ status: "inbox" })).not.toThrow();
 		expect(() => tool.inputSchema.parse({ status: "invalid" })).toThrow();
+		expect(() => tool.inputSchema.parse({ status: "archived" })).toThrow();
 	});
 
 	it("snooze_thread requires both threadId and until", () => {

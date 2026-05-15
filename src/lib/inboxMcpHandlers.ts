@@ -50,17 +50,10 @@ export async function runInboxToolHandler(
 	switch (name) {
 		case "list_threads": {
 			const { status = "inbox", limit = 25 } =
-				(args as { status?: string; limit?: number }) ?? {};
-			// MessageStatus has `archived`, but aggregateThreads's StatusFilter
-			// is `inbox|snoozed|done|all`. Map `archived` → pass-through (the
-			// summary's latest.status comparison handles it correctly); other
-			// unknowns fall through to `inbox`.
-			const filter: StatusFilter =
-				status === "snoozed" || status === "done" || status === "all"
-					? status
-					: status === "archived"
-					? ("archived" as unknown as StatusFilter)
-					: "inbox";
+				(args as { status?: "inbox" | "snoozed" | "done"; limit?: number }) ?? {};
+			// status is pre-validated by zod in dispatchMcpRequest's safeParse,
+			// so it's already a subset of StatusFilter — no cast needed.
+			const filter: StatusFilter = status;
 			const senderAddress =
 				((await ctx.kv.get("settings:senderAddress")) as string | null) ?? "";
 			const all = await messages.query({ limit: 10000 });
