@@ -1,6 +1,6 @@
 import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
-import { DeliverError, wrapBindingError } from "./lib/cfBindingError";
+import { DeliverError, wrapBindingError, type EmailBinding } from "./lib/cfBindingError";
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
@@ -494,21 +494,23 @@ async function deliverEmail(
 	// Reach the Workers binding via dynamic import. Keeps the dependency on the
 	// Workers runtime lazy — module evaluation works in non-Workers contexts
 	// (vitest, etc.); only the handler firing requires the runtime.
-	let binding: { send(payload: Record<string, unknown>): Promise<{ messageId?: string }> };
+	let binding: EmailBinding;
 	try {
 		const { env } = await import("cloudflare:workers");
 		const candidate = (env as Record<string, unknown>).EMAIL;
 		if (!candidate || typeof (candidate as { send?: unknown }).send !== "function") {
-			throw new Error("EMAIL binding missing or malformed");
+			const bindingMissingErr = new Error("EMAIL binding missing or malformed");
+			(bindingMissingErr as Error & { code: string }).code = "EMAIL_BINDING_MISSING";
+			throw bindingMissingErr;
 		}
-		binding = candidate as typeof binding;
+		binding = candidate as EmailBinding;
 	} catch (err) {
 		throw new DeliverError(
 			`emdash-inbox: env.EMAIL binding unavailable — check wrangler.jsonc has send_email[{name:"EMAIL"}]. (${err instanceof Error ? err.message : String(err)})`,
 		);
 	}
 
-	const payload: Record<string, unknown> = {
+	const payload: Parameters<EmailBinding["send"]>[0] = {
 		to: event.message.to,
 		from: senderAddress,
 		subject: event.message.subject,
@@ -521,7 +523,7 @@ async function deliverEmail(
 		};
 	}
 
-	let result: { messageId?: string };
+	let result: Awaited<ReturnType<EmailBinding["send"]>>;
 	try {
 		result = await binding.send(payload);
 	} catch (err) {
