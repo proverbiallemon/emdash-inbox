@@ -3,9 +3,8 @@ import { z } from "zod";
 /**
  * Pure-logic tool catalog for the inbox MCP server. Each tool exposes a
  * name, a human-readable description (what the LLM sees), and a zod input
- * schema. The actual execution handlers are wired separately in Task 10's
- * `inboxMcpHandlers.ts` so the tool catalog stays test-friendly — no DB,
- * no ctx required.
+ * schema. The actual execution handlers live in `inboxMcpHandlers.ts` so
+ * the catalog stays test-friendly — no DB, no ctx required.
  *
  * When extending the catalog: add the new tool's name to `InboxToolName`,
  * define its input schema below, and append it to `listInboxTools()`.

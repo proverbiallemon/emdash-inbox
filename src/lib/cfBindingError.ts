@@ -2,9 +2,8 @@
 
 /**
  * Shape of the Cloudflare Email Sending Workers binding (env.EMAIL).
- * Per agentic-inbox's workers/email-sender.ts (Apache 2.0), the structured
- * send() accepts to/from/subject/html/text plus optional cc/bcc/replyTo,
- * attachments, and headers. Returns { messageId } on success.
+ * The structured send() accepts to/from/subject/html/text plus optional
+ * cc/bcc/replyTo, attachments, and headers; returns { messageId } on success.
  *
  * Narrowed here to what `deliverEmail()` actually uses. If we extend our
  * use later (attachments, replyTo), expand this type rather than relaxing
@@ -39,10 +38,9 @@ export class DeliverError extends Error {
  * Map an unknown thrown error from `env.EMAIL.send()` into a `DeliverError`
  * with a message a non-developer operator can act on.
  *
- * The CF Email binding throws errors with a `.code` field (per agentic-inbox's
- * `workers/email-sender.ts`). We pattern-match on known codes and surface
- * setup guidance; falling back to the original message for unknowns so we
- * don't swallow useful context.
+ * The CF Email binding throws errors with a `.code` field. We pattern-match
+ * on known codes and surface setup guidance; falling back to the original
+ * message for unknowns so we don't swallow useful context.
  */
 export function wrapBindingError(err: unknown): DeliverError {
 	if (err instanceof DeliverError) return err;
