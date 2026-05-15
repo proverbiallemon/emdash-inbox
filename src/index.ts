@@ -570,12 +570,17 @@ async function deliverEmail(
 /**
  * Plugin definition — runs on the deployed server at request time.
  *
- * Transport choice: we POST to the Cloudflare Email Service REST API rather
- * than binding `env.SEND_EMAIL`. EmDash v0.5.0's plugin context does not
- * expose host Cloudflare env bindings to hooks, so the REST path (token in
- * `ctx.kv` + `ctx.http.fetch`) is the only way for a plugin to deliver via
- * CF Email Service today. Swapping to the binding later is a single-site
- * change in the `email:deliver` handler.
+ * Transport: outbound delivery flows through the native Cloudflare Email
+ * Sending Workers binding (`env.EMAIL.send()`), reached via dynamic
+ * `await import("cloudflare:workers")` inside `deliverEmail()`. EmDash's
+ * `PluginContext` still doesn't expose host env bindings, but the Workers
+ * runtime provides the same `env` as a module-level import — the dynamic
+ * variant keeps the dependency on the Workers runtime lazy so module
+ * evaluation works in non-Workers contexts (vitest, etc.).
+ *
+ * Pre-M7 we POSTed to the CF Email Service REST API with an operator-
+ * minted API token. M7 dropped that path entirely; the binding handles
+ * auth implicitly via the Worker's CF account.
  */
 export function createPlugin() {
 	return definePlugin({
