@@ -322,6 +322,20 @@ async function ensureMigrations(ctx: any): Promise<void> {
 	}
 	if (pass4 > 0) ctx.log.info("emdash-inbox: backfilled read", { migrated: pass4 });
 
+	// --- Pass 5 (M7): drop stale REST-era settings rows ---
+	// Idempotent — ctx.kv.delete is a no-op on missing keys. Lazy-runs every
+	// route invocation; cheap. Removes the accountId/apiToken rows that
+	// pre-M7 installs left behind when the plugin used the CF Email Service
+	// REST API; the binding migration no longer reads them.
+	try {
+		await ctx.kv.delete("settings:accountId");
+		await ctx.kv.delete("settings:apiToken");
+	} catch (err) {
+		ctx.log.warn("emdash-inbox: pass 5 (drop REST settings) failed", {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+
 	// --- Cron schedule (M3; unchanged) ---
 	if (ctx.cron) {
 		await ctx.cron.schedule("wake-snoozed-messages", {
@@ -917,23 +931,11 @@ export function createPlugin() {
 			// settingsSchema defaults are not materialized automatically by EmDash;
 			// the hook above validates presence at send time and throws if missing.
 			settingsSchema: {
-				accountId: {
-					type: "string",
-					label: "Cloudflare account ID",
-					description:
-						"Find this in your Cloudflare dashboard URL or on the account home page.",
-				},
-				apiToken: {
-					type: "secret",
-					label: "Cloudflare API token (Email Sending scope)",
-					description:
-						"Create at dash.cloudflare.com → My Profile → API Tokens → Create Token, with permission: Account → Email Sending → Send.",
-				},
 				senderAddress: {
 					type: "string",
 					label: "Verified sender address",
 					description:
-						"Must be a sender you have verified in Cloudflare Email Service (e.g. hello@yourdomain.com).",
+						"Must be a sender on a domain you have onboarded to Cloudflare Email Sending (e.g. hello@yourdomain.com). Onboard at Dashboard → Compute & AI → Email Service → Email Sending → Onboard Domain.",
 				},
 				inboundSecret: {
 					type: "secret",
