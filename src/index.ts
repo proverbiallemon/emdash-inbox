@@ -873,6 +873,19 @@ export function createPlugin() {
 				},
 			},
 
+			"messages/mcp": {
+				// Admin-auth (default) — EmDash gates the route on session cookie
+				// or Bearer API token before this handler fires. The MCP wire
+				// dispatcher itself is auth-agnostic; it trusts that anyone who
+				// reaches it has full inbox access. See `lib/inboxMcpHandlers.ts`
+				// for the choice of manual JSON-RPC dispatch over the SDK runtime.
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const { dispatchMcpRequest } = await import("./lib/inboxMcpHandlers");
+					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {});
+				},
+			},
+
 			inbound: {
 				public: true,
 				handler: async (routeCtx) => {
