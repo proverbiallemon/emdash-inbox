@@ -189,7 +189,7 @@ export async function dispatchMcpRequest(
 						// MCP spec revision. Bump when the SDK we pair against bumps.
 						protocolVersion: "2025-06-18",
 						capabilities: { tools: {} },
-						serverInfo: { name: "emdash-inbox", version: "0.6.1" },
+						serverInfo: { name: "emdash-inbox", version: "0.7.0" },
 					},
 				};
 

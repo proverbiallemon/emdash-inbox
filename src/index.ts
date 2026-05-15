@@ -13,7 +13,7 @@ import { aggregateThreads, type StatusFilter } from "./lib/threadSummary";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.6.1",
+		version: "0.7.0",
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -585,7 +585,7 @@ async function deliverEmail(
 export function createPlugin() {
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.6.1",
+		version: "0.7.0",
 
 		capabilities: [
 			"email:provide",
