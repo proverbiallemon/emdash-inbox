@@ -5,13 +5,13 @@
 	"keywords": [
 		"emdash",
 		"emdash-plugin",
-		"cms",
-		"email",
-		"inbox",
 		"mailbox",
-		"cloudflare",
+		"inbox",
+		"email",
+		"cms",
+		"cloudflare-email",
 		"cloudflare-workers",
-		"cloudflare-email"
+		"cloudflare"
 	],
 	"license": "Apache-2.0",
 	"repository": {
