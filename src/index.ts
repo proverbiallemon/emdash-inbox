@@ -585,10 +585,7 @@ export function createPlugin() {
 		capabilities: [
 			"email:provide",
 			"email:intercept",
-			"network:fetch",
 		],
-
-		allowedHosts: ["api.cloudflare.com"],
 
 		storage: {
 			messages: {
