@@ -10,7 +10,7 @@ Outbound goes through the native Cloudflare Email Sending Workers binding — no
 
 **Pre-alpha (v0.7.0).** The plugin works end-to-end for outbound + inbound + threading + reply + grouped inbox with per-message read state. M1–M7 shipped: outbound and inbound email work end-to-end via the native CF Email Sending binding; the admin page is a card-based Inbox with pin / snooze / done, filter tabs, date buckets, and a cron-driven wake path for snoozed messages; clicking a card opens a thread-grouped detail view with sanitized HTML body rendering and thread-level bulk actions; the thread view has an inline TipTap-based reply form (pre-filled To / Subject / quoted body, Cmd+Enter to send); the inbox list collapses messages to one card per thread with participant chips, message-count badge, and a faded second snippet when the thread has history; and an admin-auth MCP route (`messages/mcp`) exposes 7 inbox tools over JSON-RPC 2.0. Inbox list aggregates threads client-side over all messages on every list-view fetch — fine for personal mailboxes (<5K messages), revisit before v1.0 if running at higher volumes.
 
-Built against EmDash v0.12.0. Expect breaking changes between commits as EmDash itself matures.
+Built against EmDash v0.14.0 (bumped from 0.12 — see CHANGELOG). Expect breaking changes between commits as EmDash itself matures.
 
 ## Why this exists
 
@@ -32,6 +32,11 @@ EmDash (Cloudflare's WordPress successor, released April 2026) ships with a plug
 5. **Deploy the inbound sidecar Worker** under `examples/inbound-email-worker/` and bind it to your domain via Cloudflare Email Routing. The sidecar POSTs raw RFC822 to `POST /_emdash/api/plugins/emdash-inbox/inbound`, gated by `X-Inbound-Secret` matching the value you configured in step 4.
 
 Operators upgrading from 0.6.x: the `accountId` and `apiToken` fields are gone — existing rows for those settings are cleared automatically on first request after upgrade. The CF API token they referenced can be revoked.
+
+### Troubleshooting
+
+- **`No email provider configured` / `EMAIL_NOT_CONFIGURED` after install.** Tail the host worker (`wrangler tail`) and look for `[hooks] Plugin "emdash-inbox" declares email:deliver hook without hooks.email-transport:register capability — skipping`. That message means your host is on EmDash 0.14+ and is bundling an older `definePlugin` from `emdash-inbox`'s nested `node_modules`. Make sure `emdash-inbox`'s `devDependencies.emdash` matches your host's installed version (≥0.14) and rebuild the plugin with `pnpm install && pnpm build`. The current main branch is already set up for 0.14.
+- **Magic-link URL contains `localhost:4321`.** EmDash stores the base URL under the `emdash:site_url` option in the database, set during initial setup. Setting `SITE_URL` in `wrangler.jsonc` afterwards does not back-fill that row. Update it directly: `wrangler d1 execute <db> --remote --command "UPDATE options SET value='\"https://your.domain\"' WHERE name='emdash:site_url';"`
 
 ## Roadmap
 

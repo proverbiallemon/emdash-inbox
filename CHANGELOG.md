@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Compatibility with EmDash 0.14+. The host introduced explicit
+  capability gates on email hook registration in 0.14:
+  `email:deliver` now requires `hooks.email-transport:register` and
+  `email:afterSend` now requires `hooks.email-events:register`.
+  Without them the host silently skips the hook with a
+  `[hooks] Plugin "emdash-inbox" declares email:deliver hook
+  without hooks.email-transport:register capability — skipping`
+  warning in the worker log, leaving the plugin loaded but with no
+  outbound email path. Both capabilities are now declared in
+  `createPlugin()`. Older EmDash (≤0.13) ignores unknown
+  capabilities, so the change is backward-compatible.
+- Dev dep on `emdash` bumped from `^0.5.0` to `^0.14.0`. With pnpm
+  the package's bundled code resolves `import { definePlugin } from
+  "emdash"` against the plugin's own nested `node_modules`, which
+  pinned the old version and therefore an old `definePlugin` whose
+  `validCapabilities` set didn't include the new hook permissions.
+  Matching the host's installed range keeps nested resolution
+  honest. The runtime peer dep stays `"emdash": "*"`.
+
 ## [0.7.0] — 2026-05-15
 
 ### Changed
