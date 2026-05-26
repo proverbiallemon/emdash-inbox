@@ -53,7 +53,7 @@
 	},
 	"devDependencies": {
 		"@types/react": "^19",
-		"emdash": "^0.5.0",
+		"emdash": "^0.14.0",
 		"happy-dom": "^20.9.0",
 		"react": "^19",
 		"tsdown": "^0.21.9",

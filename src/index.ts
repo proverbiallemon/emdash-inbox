@@ -590,6 +590,11 @@ export function createPlugin() {
 		capabilities: [
 			"email:provide",
 			"email:intercept",
+			// EmDash 0.14+ gates email hook registration behind these explicit
+			// capabilities. email:deliver needs hooks.email-transport:register;
+			// email:afterSend needs hooks.email-events:register.
+			"hooks.email-transport:register",
+			"hooks.email-events:register",
 		],
 
 		storage: {
