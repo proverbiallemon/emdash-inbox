@@ -27,10 +27,12 @@ EmDash wraps every plugin-route response in `{"data": ...}`, which MCP clients e
    npx wrangler deploy
    ```
 
-5. **Connect an MCP client** (e.g., Claude desktop):
-   ```bash
-   claude mcp add --transport http emdash-inbox https://your.site/api/inbox-mcp
-   ```
+5. **Connect an MCP client**:
+   - **Claude Code**: Use the CLI command:
+     ```bash
+     claude mcp add --transport http emdash-inbox https://your.site/api/inbox-mcp
+     ```
+   - **Claude Desktop / claude.ai**: Add the deployed URL as a custom connector in Settings → Connectors → Add custom connector.
 
 ## Security
 
