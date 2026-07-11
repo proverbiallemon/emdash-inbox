@@ -35,7 +35,7 @@ function escapeHtml(s: string): string {
 		.replace(/'/g, "&#39;");
 }
 
-function plainTextToHtml(text: string): string {
+export function plainTextToHtml(text: string): string {
 	return `<p>${escapeHtml(text).replace(/\r?\n/g, "<br>")}</p>`;
 }
 
