@@ -19,7 +19,14 @@ export type InboxToolName =
 	| "mark_read"
 	| "pin_thread"
 	| "snooze_thread"
-	| "mark_done";
+	| "mark_done"
+	| "compose_email"
+	| "reply_to_thread"
+	| "reply_all_to_thread"
+	| "save_draft"
+	| "list_drafts"
+	| "send_draft"
+	| "discard_draft";
 
 export interface InboxToolDef<TInput extends z.ZodType = z.ZodType> {
 	name: InboxToolName;
@@ -60,6 +67,57 @@ const snoozeThreadInput = z.object({
 
 const markDoneInput = z.object({
 	threadId: z.string().min(1).describe("Thread to mark done (move out of inbox)."),
+});
+
+const recipientField = z
+	.union([z.string(), z.array(z.string())])
+	.describe("One address, a comma-separated list, or an array of addresses.");
+
+const composeEmailInput = z.object({
+	to: recipientField,
+	cc: recipientField.optional(),
+	bcc: recipientField.optional(),
+	subject: z.string().min(1).describe("Email subject."),
+	text: z.string().min(1).describe("Plain-text body. HTML is generated from it unless `html` is given."),
+	html: z.string().optional().describe("Optional HTML body."),
+});
+
+const replyToThreadInput = z.object({
+	threadId: z.string().min(1).describe("Thread to reply to (from list_threads / get_thread)."),
+	text: z.string().min(1).describe("Plain-text reply body."),
+	quoteOriginal: z.boolean().default(true).describe("Quote the original message below your reply. Default true."),
+});
+
+const replyAllToThreadInput = replyToThreadInput;
+
+const saveDraftInput = z.object({
+	draftId: z.string().optional().describe("Existing draft to update. Omit to create."),
+	threadId: z.string().optional().describe("Set to make this a reply draft on that thread."),
+	to: recipientField.optional(),
+	cc: recipientField.optional(),
+	bcc: recipientField.optional(),
+	subject: z.string().optional(),
+	text: z.string().optional(),
+});
+
+const listDraftsInput = z.object({});
+
+const sendDraftInput = z.object({
+	draftId: z.string().min(1).describe("Draft to send (from list_drafts / save_draft)."),
+	edits: z
+		.object({
+			to: recipientField.optional(),
+			cc: recipientField.optional(),
+			bcc: recipientField.optional(),
+			subject: z.string().optional(),
+			text: z.string().optional(),
+		})
+		.optional()
+		.describe("Last-minute changes applied before sending."),
+});
+
+const discardDraftInput = z.object({
+	draftId: z.string().min(1).describe("Draft to delete permanently."),
 });
 
 export function listInboxTools(): InboxToolDef[] {
@@ -105,6 +163,46 @@ export function listInboxTools(): InboxToolDef[] {
 			description:
 				"Move a thread out of the inbox into the Done folder. Equivalent to clicking 'Done' in the UI.",
 			inputSchema: markDoneInput,
+		},
+		{
+			name: "compose_email",
+			description:
+				"Send a brand-new email (starts a new thread). Requires to, subject, text. Returns the new message and thread IDs.",
+			inputSchema: composeEmailInput,
+		},
+		{
+			name: "reply_to_thread",
+			description:
+				"Reply to the sender of a thread's latest message. Subject and In-Reply-To are derived automatically; the original is quoted below your text unless quoteOriginal is false.",
+			inputSchema: replyToThreadInput,
+		},
+		{
+			name: "reply_all_to_thread",
+			description:
+				"Like reply_to_thread but also CCs everyone on the latest message (original to + cc), excluding this mailbox's own address.",
+			inputSchema: replyAllToThreadInput,
+		},
+		{
+			name: "save_draft",
+			description:
+				"Save an unfinished email as a draft instead of sending. Pass threadId to make it a reply draft. Returns a draftId you can update, send with send_draft, or delete with discard_draft.",
+			inputSchema: saveDraftInput,
+		},
+		{
+			name: "list_drafts",
+			description: "List unsent drafts, newest first (id, recipients, subject, snippet, updated time).",
+			inputSchema: listDraftsInput,
+		},
+		{
+			name: "send_draft",
+			description:
+				"Send a saved draft, optionally applying last-minute edits. The draft is deleted on success; on delivery failure it is preserved unchanged.",
+			inputSchema: sendDraftInput,
+		},
+		{
+			name: "discard_draft",
+			description: "Permanently delete a draft. This cannot be undone.",
+			inputSchema: discardDraftInput,
 		},
 	];
 }

@@ -4,19 +4,25 @@ import { ThreadHeader } from "./ThreadHeader";
 import { ThreadActions } from "./ThreadActions";
 import { ThreadMessage, type ThreadMessageRow } from "./ThreadMessage";
 import { SnoozePicker } from "./SnoozePicker";
-import { ReplyCompose } from "./ReplyCompose";
+import { ReplyCompose, type ReplyComposeDefaults } from "./ReplyCompose";
 import { replyDefaults } from "../lib/replyDefaults";
+import { deriveReplyAll } from "../lib/recipients";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
 // A thread row carries all the fields the sub-components need. Extends the
-// basic thread shape with the fields ThreadActions needs (status, pinned).
+// basic thread shape with the fields ThreadActions needs (status, pinned),
+// plus the M8 multi-recipient fields (toAll/cc) and threadId used for
+// reply-all prefill and save-draft threading.
 interface Row {
 	id: string;
 	data: ThreadMessageRow["data"] & {
 		status: "inbox" | "snoozed" | "done" | "archived";
 		pinned: boolean;
 		messageId: string;
+		toAll?: string[];
+		cc?: string[];
+		threadId: string | null;
 	};
 }
 
@@ -35,7 +41,9 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	// Gate concurrent bulk calls so a second action can't clobber the first's
 	// optimistic state or failure-revert. Action buttons disable while busy.
 	const [busy, setBusy] = React.useState(false);
-	const [replyOpen, setReplyOpen] = React.useState(false);
+	// null = closed; "reply" prefills to the latest message's sender only;
+	// "reply-all" additionally prefills cc via deriveReplyAll.
+	const [replyMode, setReplyMode] = React.useState<"reply" | "reply-all" | null>(null);
 
 	const loadThread = React.useCallback(async () => {
 		setLoading(true);
@@ -118,12 +126,13 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 			},
 		);
 
-	const handleReply = () => setReplyOpen(true);
+	const handleReply = () => setReplyMode("reply");
+	const handleReplyAll = () => setReplyMode("reply-all");
 	const handleReplySent = async () => {
-		setReplyOpen(false);
+		setReplyMode(null);
 		await loadThread();
 	};
-	const handleReplyDiscard = () => setReplyOpen(false);
+	const handleReplyDiscard = () => setReplyMode(null);
 
 	const handleSnoozeConfirm = async (iso: string) => {
 		setSnoozingOpen(false);
@@ -169,6 +178,47 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 		),
 	);
 
+	// Anchor for reply defaults: prefer the latest INBOUND row so replying
+	// prefills to the customer, not to ourselves when the newest row in the
+	// thread happens to be our own outbound message. Falls back to the literal
+	// last row only for outbound-only threads — mirrors replySend's rule on
+	// the server (src/lib/composeOps.ts).
+	const anchor = [...thread].reverse().find((r) => r.data.direction === "inbound") ?? thread[thread.length - 1];
+
+	// Reply defaults for the plain Reply button — replies only to the anchor
+	// message's sender/recipient, quoting its body.
+	const buildReplyDefaults = (): ReplyComposeDefaults => {
+		return replyDefaults({
+			direction: anchor.data.direction,
+			from: anchor.data.from,
+			to: anchor.data.to,
+			subject: anchor.data.subject,
+			bodyText: anchor.data.bodyText,
+			bodyHtml: anchor.data.bodyHtml,
+			receivedAt: anchor.data.receivedAt,
+		});
+	};
+
+	// Reply-all defaults: to/cc come from deriveReplyAll (client-side prefill;
+	// the server refilters regardless), subject/quoteHtml are shared with the
+	// plain Reply button. Sender address for the "minus my address" filter is
+	// approximated from any outbound row's `from` in this thread.
+	const buildReplyAllDefaults = (): ReplyComposeDefaults => {
+		const senderAddress = thread.find((r) => r.data.direction === "outbound")?.data.from ?? "";
+		const all = deriveReplyAll(
+			{
+				direction: anchor.data.direction,
+				from: anchor.data.from,
+				to: anchor.data.to,
+				toAll: anchor.data.toAll,
+				cc: anchor.data.cc,
+			},
+			senderAddress,
+		);
+		const base = buildReplyDefaults();
+		return { to: all.to.join(", "), cc: all.cc.join(", "), subject: base.subject, quoteHtml: base.quoteHtml };
+	};
+
 	return (
 		<div className="space-y-2">
 			<button type="button" onClick={onBack} className="text-sm underline hover:no-underline">
@@ -179,6 +229,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 					thread={thread}
 					busy={busy}
 					onReply={handleReply}
+					onReplyAll={handleReplyAll}
 					onPin={handlePin}
 					onStatus={handleStatus}
 					onSnooze={() => setSnoozingOpen(true)}
@@ -199,18 +250,11 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 						}
 					/>
 				))}
-				{replyOpen && thread.length > 0 && (
+				{replyMode !== null && thread.length > 0 && (
 					<ReplyCompose
-						defaults={replyDefaults({
-							direction: thread[thread.length - 1].data.direction,
-							from: thread[thread.length - 1].data.from,
-							to: thread[thread.length - 1].data.to,
-							subject: thread[thread.length - 1].data.subject,
-							bodyText: thread[thread.length - 1].data.bodyText,
-							bodyHtml: thread[thread.length - 1].data.bodyHtml,
-							receivedAt: thread[thread.length - 1].data.receivedAt,
-						})}
+						defaults={replyMode === "reply-all" ? buildReplyAllDefaults() : buildReplyDefaults()}
 						inReplyTo={thread[thread.length - 1].data.messageId}
+						threadId={thread[0].data.threadId}
 						onSent={handleReplySent}
 						onDiscard={handleReplyDiscard}
 					/>

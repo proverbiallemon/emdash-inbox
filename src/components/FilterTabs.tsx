@@ -1,17 +1,19 @@
 import * as React from "react";
 
 export type StatusFilter = "inbox" | "snoozed" | "done" | "all";
+export type TabId = StatusFilter | "drafts";
 
-const TABS: { id: StatusFilter; label: string }[] = [
+const TABS: { id: TabId; label: string }[] = [
 	{ id: "inbox", label: "Inbox" },
 	{ id: "snoozed", label: "Snoozed" },
 	{ id: "done", label: "Done" },
+	{ id: "drafts", label: "Drafts" },
 	{ id: "all", label: "All" },
 ];
 
 interface Props {
-	current: StatusFilter;
-	onChange: (next: StatusFilter) => void;
+	current: TabId;
+	onChange: (next: TabId) => void;
 }
 
 export function FilterTabs({ current, onChange }: Props) {

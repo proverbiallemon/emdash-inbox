@@ -4,7 +4,23 @@ import { DeliverError, wrapBindingError, type EmailBinding } from "./lib/cfBindi
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
-import { aggregateThreads, type StatusFilter } from "./lib/threadSummary";
+import { aggregateThreads, isDraftRow, type StatusFilter } from "./lib/threadSummary";
+import {
+	composeSend,
+	replySend,
+	draftSave,
+	draftSend,
+	draftDiscard,
+	listDrafts,
+	ComposeError,
+	NotFoundError,
+	type ComposeInput,
+	type ReplyInput,
+	type DraftInput,
+} from "./lib/composeOps";
+import { draftSummaryOf } from "./lib/draftSummary";
+import { normalizeRecipients } from "./lib/recipients";
+import { extractAddresses } from "./lib/inboundAddresses";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -45,7 +61,7 @@ const SETTINGS = {
  *     straight `get(id)` → mutate → `put(id)` with no hashing indirection.
  */
 export type MessageDirection = "inbound" | "outbound";
-export type MessageStatus = "inbox" | "snoozed" | "done" | "archived";
+export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft";
 
 export interface MessageDoc {
 	/** RFC 5322 Message-ID (angle-bracketed). Unique per document. */
@@ -53,6 +69,15 @@ export interface MessageDoc {
 	direction: MessageDirection;
 	from: string;
 	to: string;
+	/** M8. All recipients when composing to multiple. First entry mirrored
+	 *  into legacy `to` so pre-M8 readers keep working. Readers use
+	 *  `toAll ?? [to]`. */
+	toAll?: string[];
+	/** M8. CC recipients. Absent on pre-M8 rows. */
+	cc?: string[];
+	/** M8. BCC recipients. Absent on pre-M8 rows; never rendered in thread
+	 *  views of received copies (only stored on our own outbound rows). */
+	bcc?: string[];
 	subject: string;
 	bodyText: string;
 	bodyHtml: string | null;
@@ -100,6 +125,9 @@ async function persistOutbound(
 	event: {
 		message: {
 			to: string;
+			toAll?: string[];
+			cc?: string[];
+			bcc?: string[];
 			subject: string;
 			text: string;
 			html?: string;
@@ -108,7 +136,7 @@ async function persistOutbound(
 		source: string;
 	},
 	senderAddress: string,
-): Promise<void> {
+): Promise<{ id: string; threadId: string }> {
 	const now = new Date().toISOString();
 	const msgId = crypto.randomUUID();
 	const senderDomain = senderAddress.split("@")[1] ?? "emdash-inbox.local";
@@ -138,6 +166,9 @@ async function persistOutbound(
 		direction: "outbound",
 		from: senderAddress,
 		to: event.message.to,
+		toAll: event.message.toAll ?? [event.message.to],
+		cc: event.message.cc ?? [],
+		bcc: event.message.bcc ?? [],
 		subject: event.message.subject,
 		bodyText: event.message.text,
 		bodyHtml: event.message.html ?? null,
@@ -176,6 +207,8 @@ async function persistOutbound(
 				outboundCount: 1,
 			};
 	await ctx.storage.contacts.put(contactId, contact);
+
+	return { id: msgId, threadId: derivedThreadId };
 }
 
 /**
@@ -380,6 +413,12 @@ async function persistInbound(
 	const fromAddr = parsed.from?.address ?? "(unknown)";
 	const fromName = parsed.from?.name ?? null;
 	const toAddr = parsed.to?.[0]?.address ?? "(unknown)";
+	// Mirrors the outbound `toAll ?? [to]` convention: if every parsed To
+	// entry turned out to be an unaddressed group (see extractAddresses),
+	// fall back to the single `toAddr` so reply-all math always has a `to`.
+	const toAllList = extractAddresses(parsed.to);
+	const toAll = toAllList.length > 0 ? toAllList : [toAddr];
+	const cc = extractAddresses(parsed.cc);
 	const messageId = parsed.messageId ?? `<${msgId}@emdash-inbox.local>`;
 
 	// Derive threadId from headers. postal-mime types `inReplyTo` as a single
@@ -424,6 +463,8 @@ async function persistInbound(
 		direction: "inbound",
 		from: fromAddr,
 		to: toAddr,
+		toAll,
+		cc,
 		subject: parsed.subject ?? "(no subject)",
 		bodyText: parsed.text ?? "",
 		bodyHtml: parsed.html ?? null,
@@ -492,10 +533,19 @@ async function persistInbound(
 async function deliverEmail(
 	ctx: any,
 	event: {
-		message: { to: string; subject: string; text: string; html?: string; inReplyTo?: string };
+		message: {
+			to: string;
+			toAll?: string[];
+			cc?: string[];
+			bcc?: string[];
+			subject: string;
+			text: string;
+			html?: string;
+			inReplyTo?: string;
+		};
 		source: string;
 	},
-): Promise<void> {
+): Promise<{ id: string; threadId: string } | null> {
 	const kv = ctx.kv as { get<T>(key: string): Promise<T | null> };
 	const senderAddress = await kv.get<string>(SETTINGS.senderAddress);
 
@@ -525,12 +575,14 @@ async function deliverEmail(
 	}
 
 	const payload: Parameters<EmailBinding["send"]>[0] = {
-		to: event.message.to,
+		to: event.message.toAll ?? event.message.to,
 		from: senderAddress,
 		subject: event.message.subject,
 		text: event.message.text,
 	};
 	if (event.message.html) payload.html = event.message.html;
+	if (event.message.cc?.length) payload.cc = event.message.cc;
+	if (event.message.bcc?.length) payload.bcc = event.message.bcc;
 	if (event.message.inReplyTo) {
 		payload.headers = {
 			"In-Reply-To": event.message.inReplyTo,
@@ -558,13 +610,28 @@ async function deliverEmail(
 	});
 
 	try {
-		await persistOutbound(ctx, event, senderAddress);
+		return await persistOutbound(ctx, event, senderAddress);
 	} catch (err) {
 		ctx.log.error("emdash-inbox: failed to persist outbound", {
 			to: event.message.to,
 			error: err instanceof Error ? err.message : String(err),
 		});
+		return null;
 	}
+}
+
+/**
+ * Maps errors from the shared compose/draft core (`composeOps.ts`) and from
+ * `deliverEmail`'s `DeliverError` onto the wire error shape every route in
+ * this file uses. `NotFoundError` must be checked before `ComposeError`
+ * since the former extends the latter.
+ */
+function mapComposeError(err: unknown): never {
+	if (err instanceof NotFoundError) throw PluginRouteError.notFound(err.message);
+	if (err instanceof ComposeError) throw PluginRouteError.badRequest(err.message);
+	if (err instanceof DeliverError) throw PluginRouteError.badRequest(err.message);
+	const msg = err instanceof Error ? err.message : String(err);
+	throw PluginRouteError.internal(`send failed: ${msg}`);
 }
 
 /**
@@ -796,13 +863,20 @@ export function createPlugin() {
 						limit: 500,
 					});
 
+					// Drafts are invisible outside the drafts surfaces (M8 §Data model):
+					// exclude before both the mark-read side effect and the response so a
+					// draft is never marked read nor returned as part of the thread.
+					const items = ((result.items ?? []) as { id: string; data: any }[]).filter(
+						(r) => !isDraftRow(r),
+					);
+
 					// Side-effect: mark every unread message in this thread read. Wrapped so a
 					// write failure doesn't fail the fetch — same defensive pattern as
 					// persistOutbound inside deliverEmail. Returned items are the pre-write
 					// snapshot; the inbox list re-fetches on back-navigation and sees the
 					// updated state.
 					try {
-						for (const r of result.items as { id: string; data: any }[]) {
+						for (const r of items) {
 							if (r.data.read === false) {
 								await (routeCtx.storage as any).messages.put(r.id, {
 									...r.data,
@@ -817,7 +891,7 @@ export function createPlugin() {
 						});
 					}
 
-					return { items: result.items };
+					return { items };
 				},
 			},
 
@@ -826,11 +900,10 @@ export function createPlugin() {
 					await ensureMigrations(routeCtx);
 
 					const input = routeCtx.input as
-						| { inReplyTo?: unknown; to?: unknown; subject?: unknown; text?: unknown; html?: unknown }
+						| { inReplyTo?: unknown; to?: unknown; cc?: unknown; subject?: unknown; text?: unknown; html?: unknown }
 						| null;
 
 					const inReplyTo = typeof input?.inReplyTo === "string" ? input.inReplyTo.trim() : "";
-					const to = typeof input?.to === "string" ? input.to.trim() : "";
 					const subject = typeof input?.subject === "string" ? input.subject.trim() : "";
 					const text = typeof input?.text === "string" ? input.text : "";
 					const html = typeof input?.html === "string" ? input.html : "";
@@ -838,9 +911,19 @@ export function createPlugin() {
 					if (!inReplyTo) {
 						throw PluginRouteError.badRequest("inReplyTo: required non-empty string");
 					}
-					if (!to || !/^\S+@\S+\.\S+$/.test(to)) {
-						throw PluginRouteError.badRequest("to: required, must look like an email address");
+
+					// `to` accepts the same string | string[] shapes as compose/reply-all —
+					// split/validate/dedupe via normalizeRecipients, mirroring `cc` below.
+					const toInput = input?.to as string | string[] | undefined;
+					const toResult = normalizeRecipients(toInput);
+					if (!toResult.ok) {
+						throw PluginRouteError.badRequest(toResult.error);
 					}
+					const toList = toResult.value;
+					if (toList.length === 0) {
+						throw PluginRouteError.badRequest("to: required, must be one or more valid email addresses");
+					}
+
 					if (!subject) {
 						throw PluginRouteError.badRequest("subject: required non-empty string");
 					}
@@ -851,6 +934,16 @@ export function createPlugin() {
 						throw PluginRouteError.badRequest("html: required non-empty string");
 					}
 
+					// cc is optional — this is the UI reply-all send path (client derives
+					// + user edits recipients; server still validates via the same
+					// recipient-parsing rules compose/reply-all use).
+					const ccInput = input?.cc as string | string[] | undefined;
+					const ccResult = normalizeRecipients(ccInput);
+					if (!ccResult.ok) {
+						throw PluginRouteError.badRequest(ccResult.error);
+					}
+					const cc = ccResult.value;
+
 					// Server-side re-sanitization is deferred to a DOM-free sanitizer
 					// (linkedom-backed DOMPurify or sanitize-html via parse5) — the
 					// browser-only DOMPurify we use client-side throws server-side because
@@ -860,21 +953,102 @@ export function createPlugin() {
 
 					try {
 						await deliverEmail(routeCtx, {
-							message: { to, subject, text, html, inReplyTo },
+							message: {
+								to: toList[0],
+								toAll: toList,
+								subject,
+								text,
+								html,
+								inReplyTo,
+								...(cc.length ? { cc } : {}),
+							},
 							source: "emdash-inbox:reply",
 						});
 					} catch (err) {
-						if (err instanceof DeliverError) {
-							// Surface operator-actionable failure text (missing settings, CF
-							// rejection) through badRequest — emdash masks internal-error
-							// messages on the wire.
-							throw PluginRouteError.badRequest(err.message);
-						}
-						const msg = err instanceof Error ? err.message : String(err);
-						throw PluginRouteError.internal(`send failed: ${msg}`);
+						mapComposeError(err);
 					}
 
 					return { ok: true };
+				},
+			},
+
+			"messages/compose": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const input = (routeCtx.input ?? {}) as ComposeInput;
+					try {
+						return await composeSend(routeCtx, deliverEmail, input);
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/reply-all": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const input = (routeCtx.input ?? {}) as Omit<ReplyInput, "replyAll">;
+					try {
+						return await replySend(routeCtx, deliverEmail, { ...input, replyAll: true });
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/draft-save": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					try {
+						return await draftSave(routeCtx, (routeCtx.input ?? {}) as DraftInput);
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/draft-send": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const input = (routeCtx.input ?? {}) as { draftId?: string; edits?: Partial<ComposeInput> };
+					if (typeof input.draftId !== "string" || input.draftId === "") {
+						throw PluginRouteError.badRequest("draftId: required non-empty string");
+					}
+					try {
+						return await draftSend(routeCtx, deliverEmail, { draftId: input.draftId, edits: input.edits });
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/draft-discard": {
+				handler: async (routeCtx) => {
+					const input = (routeCtx.input ?? {}) as { draftId?: string };
+					if (typeof input.draftId !== "string" || input.draftId === "") {
+						throw PluginRouteError.badRequest("draftId: required non-empty string");
+					}
+					try {
+						return await draftDiscard(routeCtx, { draftId: input.draftId });
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/drafts": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const rows = await listDrafts(routeCtx);
+					return {
+						items: rows.map((r) => ({
+							...draftSummaryOf(r),
+							bodyHtml: r.data.bodyHtml,
+							bodyText: r.data.bodyText,
+							cc: r.data.cc ?? [],
+							bcc: r.data.bcc ?? [],
+						})),
+					};
 				},
 			},
 
@@ -887,7 +1061,7 @@ export function createPlugin() {
 				handler: async (routeCtx) => {
 					await ensureMigrations(routeCtx);
 					const { dispatchMcpRequest } = await import("./lib/inboxMcpHandlers");
-					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {});
+					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {}, deliverEmail);
 				},
 			},
 

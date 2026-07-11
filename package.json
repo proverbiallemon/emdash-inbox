@@ -1,6 +1,6 @@
 {
 	"name": "emdash-inbox",
-	"version": "0.7.0",
+	"version": "0.8.0",
 	"description": "Inbox-by-Google-style mailbox UI for EmDash CMS, with Cloudflare Email Service transport built in",
 	"keywords": [
 		"emdash",

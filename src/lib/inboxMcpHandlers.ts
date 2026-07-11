@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { listInboxTools, type InboxToolName } from "./inboxMcpTools";
-import { aggregateThreads, type StatusFilter } from "./threadSummary";
+import { aggregateThreads, isDraftRow, type StatusFilter } from "./threadSummary";
+import { composeSend, replySend, draftSave, draftSend, draftDiscard, listDrafts, type Deliver } from "./composeOps";
+import { draftSummaryOf } from "./draftSummary";
 
 /**
  * MCP wire layer for the inbox plugin.
@@ -44,6 +46,7 @@ export async function runInboxToolHandler(
 	ctx: any,
 	name: InboxToolName,
 	args: unknown,
+	deliver: Deliver,
 ): Promise<unknown> {
 	const messages = ctx.storage.messages;
 
@@ -67,6 +70,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			return rows
+				.filter((r) => !isDraftRow(r))
 				.map((r) => r.data)
 				.filter((m: any) => (m.threadId ?? m.messageId) === threadId)
 				.sort((a: any, b: any) =>
@@ -80,6 +84,7 @@ export async function runInboxToolHandler(
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const q = query.toLowerCase();
 			return rows
+				.filter((r) => !isDraftRow(r))
 				.map((r) => r.data)
 				.filter(
 					(m: any) =>
@@ -94,7 +99,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, { ...row.data, read });
@@ -107,7 +112,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, { ...row.data, pinned });
@@ -120,7 +125,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, {
@@ -138,7 +143,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, {
@@ -149,6 +154,27 @@ export async function runInboxToolHandler(
 			}
 			return { updated: targets.length };
 		}
+
+		case "compose_email":
+			return composeSend(ctx, deliver, args as never);
+
+		case "reply_to_thread":
+			return replySend(ctx, deliver, { ...(args as object), replyAll: false } as never);
+
+		case "reply_all_to_thread":
+			return replySend(ctx, deliver, { ...(args as object), replyAll: true } as never);
+
+		case "save_draft":
+			return draftSave(ctx, args as never);
+
+		case "list_drafts":
+			return (await listDrafts(ctx)).map(draftSummaryOf);
+
+		case "send_draft":
+			return draftSend(ctx, deliver, args as never);
+
+		case "discard_draft":
+			return draftDiscard(ctx, args as never);
 
 		default: {
 			const exhaustive: never = name;
@@ -166,6 +192,7 @@ export async function runInboxToolHandler(
 export async function dispatchMcpRequest(
 	ctx: any,
 	request: unknown,
+	deliver: Deliver,
 ): Promise<unknown> {
 	const req = request as {
 		jsonrpc?: string;
@@ -189,7 +216,7 @@ export async function dispatchMcpRequest(
 						// MCP spec revision. Bump when the SDK we pair against bumps.
 						protocolVersion: "2025-06-18",
 						capabilities: { tools: {} },
-						serverInfo: { name: "emdash-inbox", version: "0.7.0" },
+						serverInfo: { name: "emdash-inbox", version: "0.8.0" },
 					},
 				};
 
@@ -237,6 +264,7 @@ export async function dispatchMcpRequest(
 						ctx,
 						tool.name,
 						parsed.data,
+						deliver,
 					);
 					return {
 						jsonrpc: "2.0",

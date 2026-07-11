@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { aggregateThreads } from "./threadSummary";
+import { aggregateThreads, isDraftRow } from "./threadSummary";
 import type { MessageDoc } from "../index";
 
 const SENDER = "PocketBear@harildkyler.com";
@@ -144,5 +144,54 @@ describe("aggregateThreads", () => {
 
 	it("empty messages → empty result", () => {
 		expect(aggregateThreads([], "inbox", SENDER)).toEqual([]);
+	});
+});
+
+describe("draft exclusion (M8)", () => {
+	it("drafts never appear in thread summaries, any filter", () => {
+		const rows = [
+			row("m1", { status: "inbox", threadId: "t1", receivedAt: "2026-07-01T00:00:00Z" }),
+			row("d1", { status: "draft", threadId: "t1", receivedAt: "2026-07-02T00:00:00Z", direction: "outbound" }),
+		];
+		for (const filter of ["inbox", "snoozed", "done", "all"] as const) {
+			const out = aggregateThreads(rows, filter, SENDER);
+			for (const summary of out) {
+				expect(summary.messageIds).not.toContain("d1");
+			}
+		}
+	});
+
+	it("a draft does not become the thread's latest message", () => {
+		const rows = [
+			row("m1", { status: "inbox", threadId: "t1", receivedAt: "2026-07-01T00:00:00Z", subject: "real" }),
+			row("d1", { status: "draft", threadId: "t1", receivedAt: "2026-07-09T00:00:00Z", subject: "draft", direction: "outbound" }),
+		];
+		const out = aggregateThreads(rows, "inbox", SENDER);
+		expect(out).toHaveLength(1);
+		expect(out[0].latest.subject).toBe("real");
+	});
+
+	it("a thread consisting only of drafts produces no summary", () => {
+		const rows = [
+			row("d1", { status: "draft", threadId: "t9", receivedAt: "2026-07-09T00:00:00Z", direction: "outbound" }),
+		];
+		expect(aggregateThreads(rows, "all", SENDER)).toHaveLength(0);
+	});
+});
+
+describe("isDraftRow", () => {
+	it("is true for a row with status draft", () => {
+		expect(isDraftRow(row("d1", { status: "draft" }))).toBe(true);
+	});
+
+	it("is false for non-draft statuses", () => {
+		for (const status of ["inbox", "snoozed", "done", "archived"] as const) {
+			expect(isDraftRow(row("m1", { status }))).toBe(false);
+		}
+	});
+
+	it("accepts any row shape with a data.status field, not just full MessageDoc rows", () => {
+		expect(isDraftRow({ data: { status: "draft" } })).toBe(true);
+		expect(isDraftRow({ data: { status: "inbox" } })).toBe(false);
 	});
 });

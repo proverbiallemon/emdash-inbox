@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-11
+
+### Added
+
+- Compose-from-scratch in the admin UI: a new "New email" button
+  opens a blank compose form, routed via `?compose=` in the URL, with
+  To / Subject fields plus Cc / Bcc. Available through both the
+  admin UI and the MCP route.
+- Reply-all in `<ThreadView>` and via MCP. Recipient derivation
+  collects every participant across the thread's messages, excludes
+  the mailbox's own `senderAddress`, and seeds an editable Cc field
+  so the sender can prune before sending.
+- Draft lifecycle across both surfaces — save, resume, send,
+  discard. The admin UI gains a Drafts tab alongside Inbox / Snoozed
+  / Done / All; MCP callers get the same lifecycle through dedicated
+  tools.
+- 7 new MCP tools — `compose_email`, `reply_to_thread`,
+  `reply_all_to_thread`, `save_draft`, `list_drafts`, `send_draft`,
+  `discard_draft` — bringing the tool catalog to 14 (the 7 shipped
+  in 0.7.0 plus these).
+- Host-side MCP proxy example under `examples/mcp-proxy-route/`,
+  unwrapping EmDash's `{"data": ...}` response envelope so raw
+  JSON-RPC MCP clients (Claude Code, Cursor) can talk to the
+  `messages/mcp` route directly — the workaround flagged as
+  deferred in 0.7.0's Known limitations. README gains a "Connecting
+  Claude" section walking through setup.
+
 ### Changed
 
 - Verified against EmDash 0.29.0; dev dep on `emdash` bumped from
@@ -36,9 +63,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     including GET. The bundled admin UI already complies via
     `apiFetch`; external API consumers and sub-admin roles may need
     adjusting (README troubleshooting).
+- `deliverEmail` now returns the persisted message and thread ids,
+  and passes `cc` / `bcc` / multi-recipient `to` through to the
+  Email Sending binding call (previously single-recipient only).
+- `MessageDoc` gains optional `toAll`, `cc`, `bcc` fields to carry
+  the fuller recipient set through storage and rendering.
+- Drafts (`status: "draft"`) are excluded from thread aggregation in
+  `messages/list`, so an unsent draft doesn't surface as a phantom
+  thread card until it's actually sent.
+- MCP `serverInfo.version` now reports `0.8.0`.
 
 ### Fixed
 
+- Draft rows are excluded from every thread-scoped read and action, not
+  just the inbox list: the thread view, MCP `get_thread` and
+  `search_messages`, and the thread-wide mark-read / pin / snooze /
+  mark-done fan-outs all skip drafts. Previously a reply draft rendered
+  inside its thread and was silently converted to a sent-looking row
+  (destroying the draft) when the thread was marked done or snoozed.
+- Inbound messages persist every To and Cc recipient (`toAll` / `cc`),
+  so reply-all derives the full recipient set. Previously only the
+  primary To address survived ingest.
+- Closing the composer (back link or Escape) keeps an explicitly saved
+  draft; only the Discard button deletes it.
 - Compatibility with EmDash 0.14+. The host introduced explicit
   capability gates on email hook registration in 0.14:
   `email:deliver` now requires `hooks.email-transport:register` and
@@ -57,6 +104,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validCapabilities` set didn't include the new hook permissions.
   Matching the host's installed range keeps nested resolution
   honest. The runtime peer dep stays `"emdash": "*"`.
+- Reply-all now anchors recipient and quote derivation on the
+  latest inbound message in the thread, not the newest row overall
+  — a self-authored outbound reply landing last no longer skews who
+  gets addressed.
+- Draft saves are cancellable mid-flight, mirroring the send-
+  cancellation pattern from 0.5.1: an `AbortController` wraps the
+  save request, so navigating away or hitting Discard while a save
+  is in flight aborts cleanly instead of racing the response.
+- Plain-text draft bodies are HTML-escaped when resumed in the
+  composer, so a draft body containing `<`, `&`, or similar
+  characters doesn't get misinterpreted as markup when reloaded
+  into TipTap.
+- A failed draft send now restores the draft instead of losing it —
+  previously an errored send could leave the user with neither a
+  sent message nor a recoverable draft.
 
 ## [0.7.0] — 2026-05-15
 
