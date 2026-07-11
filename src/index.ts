@@ -5,6 +5,21 @@ import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
 import { aggregateThreads, type StatusFilter } from "./lib/threadSummary";
+import {
+	composeSend,
+	replySend,
+	draftSave,
+	draftSend,
+	draftDiscard,
+	listDrafts,
+	ComposeError,
+	NotFoundError,
+	type ComposeInput,
+	type ReplyInput,
+	type DraftInput,
+} from "./lib/composeOps";
+import { draftSummaryOf } from "./lib/draftSummary";
+import { normalizeRecipients } from "./lib/recipients";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -597,6 +612,20 @@ async function deliverEmail(
 }
 
 /**
+ * Maps errors from the shared compose/draft core (`composeOps.ts`) and from
+ * `deliverEmail`'s `DeliverError` onto the wire error shape every route in
+ * this file uses. `NotFoundError` must be checked before `ComposeError`
+ * since the former extends the latter.
+ */
+function mapComposeError(err: unknown): never {
+	if (err instanceof NotFoundError) throw PluginRouteError.notFound(err.message);
+	if (err instanceof ComposeError) throw PluginRouteError.badRequest(err.message);
+	if (err instanceof DeliverError) throw PluginRouteError.badRequest(err.message);
+	const msg = err instanceof Error ? err.message : String(err);
+	throw PluginRouteError.internal(`send failed: ${msg}`);
+}
+
+/**
  * Plugin definition — runs on the deployed server at request time.
  *
  * Transport: outbound delivery flows through the native Cloudflare Email
@@ -855,7 +884,7 @@ export function createPlugin() {
 					await ensureMigrations(routeCtx);
 
 					const input = routeCtx.input as
-						| { inReplyTo?: unknown; to?: unknown; subject?: unknown; text?: unknown; html?: unknown }
+						| { inReplyTo?: unknown; to?: unknown; cc?: unknown; subject?: unknown; text?: unknown; html?: unknown }
 						| null;
 
 					const inReplyTo = typeof input?.inReplyTo === "string" ? input.inReplyTo.trim() : "";
@@ -880,6 +909,16 @@ export function createPlugin() {
 						throw PluginRouteError.badRequest("html: required non-empty string");
 					}
 
+					// cc is optional — this is the UI reply-all send path (client derives
+					// + user edits recipients; server still validates via the same
+					// recipient-parsing rules compose/reply-all use).
+					const ccInput = input?.cc as string | string[] | undefined;
+					const ccResult = normalizeRecipients(ccInput);
+					if (!ccResult.ok) {
+						throw PluginRouteError.badRequest(ccResult.error);
+					}
+					const cc = ccResult.value;
+
 					// Server-side re-sanitization is deferred to a DOM-free sanitizer
 					// (linkedom-backed DOMPurify or sanitize-html via parse5) — the
 					// browser-only DOMPurify we use client-side throws server-side because
@@ -889,21 +928,94 @@ export function createPlugin() {
 
 					try {
 						await deliverEmail(routeCtx, {
-							message: { to, subject, text, html, inReplyTo },
+							message: { to, subject, text, html, inReplyTo, ...(cc.length ? { cc } : {}) },
 							source: "emdash-inbox:reply",
 						});
 					} catch (err) {
-						if (err instanceof DeliverError) {
-							// Surface operator-actionable failure text (missing settings, CF
-							// rejection) through badRequest — emdash masks internal-error
-							// messages on the wire.
-							throw PluginRouteError.badRequest(err.message);
-						}
-						const msg = err instanceof Error ? err.message : String(err);
-						throw PluginRouteError.internal(`send failed: ${msg}`);
+						mapComposeError(err);
 					}
 
 					return { ok: true };
+				},
+			},
+
+			"messages/compose": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const input = (routeCtx.input ?? {}) as ComposeInput;
+					try {
+						return await composeSend(routeCtx, deliverEmail, input);
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/reply-all": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const input = (routeCtx.input ?? {}) as Omit<ReplyInput, "replyAll">;
+					try {
+						return await replySend(routeCtx, deliverEmail, { ...input, replyAll: true });
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/draft-save": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					try {
+						return await draftSave(routeCtx, (routeCtx.input ?? {}) as DraftInput);
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/draft-send": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const input = (routeCtx.input ?? {}) as { draftId?: string; edits?: Partial<ComposeInput> };
+					if (typeof input.draftId !== "string" || input.draftId === "") {
+						throw PluginRouteError.badRequest("draftId: required non-empty string");
+					}
+					try {
+						return await draftSend(routeCtx, deliverEmail, { draftId: input.draftId, edits: input.edits });
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/draft-discard": {
+				handler: async (routeCtx) => {
+					const input = (routeCtx.input ?? {}) as { draftId?: string };
+					if (typeof input.draftId !== "string" || input.draftId === "") {
+						throw PluginRouteError.badRequest("draftId: required non-empty string");
+					}
+					try {
+						return await draftDiscard(routeCtx, { draftId: input.draftId });
+					} catch (err) {
+						mapComposeError(err);
+					}
+				},
+			},
+
+			"messages/drafts": {
+				handler: async (routeCtx) => {
+					await ensureMigrations(routeCtx);
+					const rows = await listDrafts(routeCtx);
+					return {
+						items: rows.map((r) => ({
+							...draftSummaryOf(r),
+							bodyHtml: r.data.bodyHtml,
+							bodyText: r.data.bodyText,
+							cc: r.data.cc ?? [],
+							bcc: r.data.bcc ?? [],
+						})),
+					};
 				},
 			},
 

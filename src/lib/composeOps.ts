@@ -54,7 +54,19 @@ export interface DraftInput {
 
 export type Deliver = (
 	ctx: unknown,
-	event: { message: Record<string, unknown>; source: string },
+	event: {
+		message: {
+			to: string;
+			toAll?: string[];
+			cc?: string[];
+			bcc?: string[];
+			subject: string;
+			text: string;
+			html?: string;
+			inReplyTo?: string;
+		};
+		source: string;
+	},
 ) => Promise<{ id: string; threadId: string } | null>;
 
 export interface DraftRow {
