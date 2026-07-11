@@ -9,6 +9,7 @@ import { DateBuckets } from "./components/DateBuckets";
 import { EmptyState } from "./components/EmptyState";
 import { SkeletonList } from "./components/SkeletonList";
 import { ThreadView } from "./components/ThreadView";
+import { ComposeView } from "./components/ComposeView";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -25,18 +26,25 @@ function readDebugFromUrl(): boolean {
 	return new URLSearchParams(window.location.search).get("debug") === "1";
 }
 
-function writeUrl(status: StatusFilter, messageId: string | null) {
+function readComposeFromUrl(): string | null {
+	return new URLSearchParams(window.location.search).get("compose");
+}
+
+function writeUrl(status: StatusFilter, messageId: string | null, composeId: string | null) {
 	const url = new URL(window.location.href);
 	if (status === "inbox") url.searchParams.delete("status");
 	else url.searchParams.set("status", status);
 	if (messageId) url.searchParams.set("message", messageId);
 	else url.searchParams.delete("message");
+	if (composeId) url.searchParams.set("compose", composeId);
+	else url.searchParams.delete("compose");
 	window.history.replaceState({}, "", url.toString());
 }
 
 function InboxPage() {
 	const [status, setStatus] = React.useState<StatusFilter>(readStatusFromUrl);
 	const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(readMessageFromUrl);
+	const [composeId, setComposeId] = React.useState<string | null>(readComposeFromUrl);
 	const [rows, setRows] = React.useState<ThreadSummary[]>([]);
 	const [loading, setLoading] = React.useState(true);
 	const [error, setError] = React.useState<string | null>(null);
@@ -66,9 +74,9 @@ function InboxPage() {
 	}, []);
 
 	React.useEffect(() => {
-		writeUrl(status, selectedMessageId);
-		if (!selectedMessageId) void refetch(status);
-	}, [status, selectedMessageId, refetch]);
+		writeUrl(status, selectedMessageId, composeId);
+		if (!selectedMessageId && !composeId) void refetch(status);
+	}, [status, selectedMessageId, composeId, refetch]);
 
 	const handleOpen = (openMessageId: string) => setSelectedMessageId(openMessageId);
 	const handleBack = () => setSelectedMessageId(null);
@@ -157,6 +165,20 @@ function InboxPage() {
 		);
 	};
 
+	if (composeId !== null) {
+		return (
+			<div className="space-y-6">
+				<ComposeView
+					draftId={composeId === "new" ? null : composeId}
+					onClose={() => {
+						setComposeId(null);
+						void refetch(status);
+					}}
+				/>
+			</div>
+		);
+	}
+
 	if (selectedMessageId) {
 		return (
 			<div className="space-y-6">
@@ -170,11 +192,20 @@ function InboxPage() {
 
 	return (
 		<div className="space-y-6">
-			<div>
-				<h1 className="text-3xl font-bold">Inbox</h1>
-				<p className="text-muted-foreground mt-1">
-					All messages that passed through this site.
-				</p>
+			<div className="flex items-start justify-between">
+				<div>
+					<h1 className="text-3xl font-bold">Inbox</h1>
+					<p className="text-muted-foreground mt-1">
+						All messages that passed through this site.
+					</p>
+				</div>
+				<button
+					type="button"
+					className="text-sm px-4 py-2 rounded bg-primary text-primary-foreground hover:opacity-90"
+					onClick={() => setComposeId("new")}
+				>
+					✉ New email
+				</button>
 			</div>
 
 			<FilterTabs current={status} onChange={setStatus} />
