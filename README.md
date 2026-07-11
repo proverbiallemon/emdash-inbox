@@ -56,6 +56,12 @@ Operators upgrading from 0.6.x: the `accountId` and `apiToken` fields are gone �
 - **Inbox admin page or `messages/*` routes return 403 for some users.** Since EmDash 0.28.1, every private plugin route requires the `plugins:manage` permission (and the `X-EmDash-Request` header) on all HTTP methods, including reads. Users below that permission tier — e.g. editors — can no longer reach the inbox API. Grant the role `plugins:manage` or have an administrator use the inbox.
 - **Snoozed messages never come back.** See operator setup step 6 — the host Worker needs a Cron Trigger on EmDash ≥ 0.19.
 
+## Connecting Claude (or any MCP client)
+
+The plugin exposes 14 inbox tools over JSON-RPC 2.0 at `/_emdash/api/plugins/emdash-inbox/messages/mcp`: 7 triage tools (`list_threads`, `get_thread`, `search_messages`, `mark_read`, `pin_thread`, `snooze_thread`, `mark_done`) to read and manipulate messages, and 7 compose tools (`compose_email`, `reply_to_thread`, `reply_all_to_thread`, `save_draft`, `list_drafts`, `send_draft`, `discard_draft`) to draft and send mail. The admin UI for inbox triage and compose both surface these tools, so anything possible interactively is also possible through Claude, other MCP clients, or custom integrations.
+
+Direct MCP client connections are blocked by EmDash's response envelope — the plugin route wraps all responses in `{"data": ...}`, which MCP clients can't unwrap. Deploy the HTTP proxy route from `examples/mcp-proxy-route/` on your site as the workaround. Copy `inbox-mcp.ts` to your `src/pages/api/` directory, set `EMDASH_INBOX_MCP_TOKEN` to an EmDash admin API token, and point your MCP client at `https://your.site/api/inbox-mcp`.
+
 ## Roadmap
 
 | Milestone | Deliverable |
