@@ -79,14 +79,19 @@ function normalizeOrThrow(input: string | string[] | undefined): string[] {
 	return result.value;
 }
 
-/** Thread rows ordered oldest-first, same query shape used across the codebase. */
+/**
+ * Thread rows ordered oldest-first, same query shape used across the codebase.
+ * Excludes unsent drafts saved onto the thread — they're not real messages and
+ * must never be picked as a reply-anchor or inReplyTo source.
+ */
 async function loadThreadRows(ctx: any, threadId: string): Promise<{ id: string; data: MessageDoc }[]> {
 	const result = await (ctx as any).storage.messages.query({
 		where: { threadId },
 		orderBy: { receivedAt: "asc" },
 		limit: 500,
 	});
-	return (result.items ?? []) as { id: string; data: MessageDoc }[];
+	const rows = (result.items ?? []) as { id: string; data: MessageDoc }[];
+	return rows.filter((r) => r.data.status !== "draft");
 }
 
 export async function composeSend(
@@ -217,7 +222,10 @@ export async function draftSave(ctx: any, input: DraftInput): Promise<{ draftId:
 			next.threadId = input.threadId;
 			const threadRows = await loadThreadRows(ctx, input.threadId);
 			const threadLatest = threadRows[threadRows.length - 1]?.data ?? null;
-			if (threadLatest) next.inReplyTo = threadLatest.messageId;
+			// threadId and inReplyTo must never disagree: if the thread has no
+			// message to anchor to, clear inReplyTo rather than leaving it
+			// pointed at whatever the draft was previously threaded under.
+			next.inReplyTo = threadLatest ? threadLatest.messageId : null;
 		}
 		await messages.put(input.draftId, next);
 		return { draftId: input.draftId };
