@@ -2,7 +2,10 @@ import * as React from "react";
 import type { ThreadSummary } from "../lib/threadSummary";
 
 type Direction = "inbound" | "outbound";
-type Status = "inbox" | "snoozed" | "done" | "archived";
+// Mirrors MessageStatus (src/index.ts) minus the fact that "draft" can never
+// actually reach here — aggregateThreads (M8) filters drafts out before a
+// ThreadSummary is built, but the union is included for structural typing.
+type Status = "inbox" | "snoozed" | "done" | "archived" | "draft";
 
 export type ThreadCardRow = ThreadSummary;
 

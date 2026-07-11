@@ -38,6 +38,12 @@ export function aggregateThreads(
 	filter: StatusFilter,
 	senderAddress: string,
 ): ThreadSummary[] {
+	// Drafts are invisible to thread aggregation (M8 §Data model): they have
+	// their own tab backed by `messages/drafts`. Filtering here — the single
+	// entry point — keeps latest-message-wins, snippets, and unread counts
+	// draft-free everywhere.
+	messages = messages.filter((r) => r.data.status !== "draft");
+
 	// Group by threadId. Defensive fallback to messageId for the (post-M4
 	// shouldn't-happen) case where threadId is null.
 	const byThread = new Map<string, MessageRow[]>();

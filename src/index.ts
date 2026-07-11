@@ -45,7 +45,7 @@ const SETTINGS = {
  *     straight `get(id)` → mutate → `put(id)` with no hashing indirection.
  */
 export type MessageDirection = "inbound" | "outbound";
-export type MessageStatus = "inbox" | "snoozed" | "done" | "archived";
+export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft";
 
 export interface MessageDoc {
 	/** RFC 5322 Message-ID (angle-bracketed). Unique per document. */
@@ -53,6 +53,15 @@ export interface MessageDoc {
 	direction: MessageDirection;
 	from: string;
 	to: string;
+	/** M8. All recipients when composing to multiple. First entry mirrored
+	 *  into legacy `to` so pre-M8 readers keep working. Readers use
+	 *  `toAll ?? [to]`. */
+	toAll?: string[];
+	/** M8. CC recipients. Absent on pre-M8 rows. */
+	cc?: string[];
+	/** M8. BCC recipients. Absent on pre-M8 rows; never rendered in thread
+	 *  views of received copies (only stored on our own outbound rows). */
+	bcc?: string[];
 	subject: string;
 	bodyText: string;
 	bodyHtml: string | null;

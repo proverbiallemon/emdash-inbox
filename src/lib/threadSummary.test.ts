@@ -146,3 +146,35 @@ describe("aggregateThreads", () => {
 		expect(aggregateThreads([], "inbox", SENDER)).toEqual([]);
 	});
 });
+
+describe("draft exclusion (M8)", () => {
+	it("drafts never appear in thread summaries, any filter", () => {
+		const rows = [
+			row("m1", { status: "inbox", threadId: "t1", receivedAt: "2026-07-01T00:00:00Z" }),
+			row("d1", { status: "draft", threadId: "t1", receivedAt: "2026-07-02T00:00:00Z", direction: "outbound" }),
+		];
+		for (const filter of ["inbox", "snoozed", "done", "all"] as const) {
+			const out = aggregateThreads(rows, filter, SENDER);
+			for (const summary of out) {
+				expect(summary.messageIds).not.toContain("d1");
+			}
+		}
+	});
+
+	it("a draft does not become the thread's latest message", () => {
+		const rows = [
+			row("m1", { status: "inbox", threadId: "t1", receivedAt: "2026-07-01T00:00:00Z", subject: "real" }),
+			row("d1", { status: "draft", threadId: "t1", receivedAt: "2026-07-09T00:00:00Z", subject: "draft", direction: "outbound" }),
+		];
+		const out = aggregateThreads(rows, "inbox", SENDER);
+		expect(out).toHaveLength(1);
+		expect(out[0].latest.subject).toBe("real");
+	});
+
+	it("a thread consisting only of drafts produces no summary", () => {
+		const rows = [
+			row("d1", { status: "draft", threadId: "t9", receivedAt: "2026-07-09T00:00:00Z", direction: "outbound" }),
+		];
+		expect(aggregateThreads(rows, "all", SENDER)).toHaveLength(0);
+	});
+});
