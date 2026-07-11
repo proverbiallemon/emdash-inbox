@@ -137,6 +137,13 @@ export async function replySend(
 	deliver: Deliver,
 	input: ReplyInput,
 ): Promise<{ id: string | null; threadId: string | null }> {
+	if (typeof input.threadId !== "string" || input.threadId.trim() === "") {
+		throw new ComposeError("threadId: required non-empty string");
+	}
+	if (typeof input.text !== "string" || input.text.trim() === "") {
+		throw new ComposeError("text: required non-empty string");
+	}
+
 	const rows = await loadThreadRows(ctx, input.threadId);
 	if (rows.length === 0) {
 		throw new NotFoundError(`thread ${input.threadId} not found`);
