@@ -20,6 +20,7 @@ import {
 } from "./lib/composeOps";
 import { draftSummaryOf } from "./lib/draftSummary";
 import { normalizeRecipients } from "./lib/recipients";
+import { extractAddresses } from "./lib/inboundAddresses";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -412,6 +413,12 @@ async function persistInbound(
 	const fromAddr = parsed.from?.address ?? "(unknown)";
 	const fromName = parsed.from?.name ?? null;
 	const toAddr = parsed.to?.[0]?.address ?? "(unknown)";
+	// Mirrors the outbound `toAll ?? [to]` convention: if every parsed To
+	// entry turned out to be an unaddressed group (see extractAddresses),
+	// fall back to the single `toAddr` so reply-all math always has a `to`.
+	const toAllList = extractAddresses(parsed.to);
+	const toAll = toAllList.length > 0 ? toAllList : [toAddr];
+	const cc = extractAddresses(parsed.cc);
 	const messageId = parsed.messageId ?? `<${msgId}@emdash-inbox.local>`;
 
 	// Derive threadId from headers. postal-mime types `inReplyTo` as a single
@@ -456,6 +463,8 @@ async function persistInbound(
 		direction: "inbound",
 		from: fromAddr,
 		to: toAddr,
+		toAll,
+		cc,
 		subject: parsed.subject ?? "(no subject)",
 		bodyText: parsed.text ?? "",
 		bodyHtml: parsed.html ?? null,
