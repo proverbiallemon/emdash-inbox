@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { Editor } from "@tiptap/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import { plainTextToHtml } from "../lib/replyDefaults";
 import { TipTapEditor } from "./TipTapEditor";
 import { ComposeToolbar } from "./ComposeToolbar";
 
@@ -51,7 +52,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 				setBcc(draft.bcc.join(", "));
 				setShowCcBcc(draft.cc.length > 0 || draft.bcc.length > 0);
 				setSubject(draft.subject === "(no subject)" ? "" : draft.subject);
-				setInitialHtml(draft.bodyHtml ?? `<p>${draft.bodyText}</p>`);
+				setInitialHtml(draft.bodyHtml ?? plainTextToHtml(draft.bodyText));
 			} catch (err) {
 				if (!cancelled) setError(err instanceof Error ? err.message : String(err));
 			}
