@@ -2,10 +2,9 @@ import { describe, it, expect } from "vitest";
 import { listInboxTools, type InboxToolName } from "./inboxMcpTools";
 
 describe("listInboxTools", () => {
-	it("exposes the M7 tool catalog by name", () => {
-		const tools = listInboxTools();
-		const names = tools.map((t) => t.name);
-		const expected: InboxToolName[] = [
+	it("exposes the full tool catalog by name, in order", () => {
+		const names = listInboxTools().map((t) => t.name);
+		expect(names).toEqual([
 			"list_threads",
 			"get_thread",
 			"search_messages",
@@ -13,10 +12,14 @@ describe("listInboxTools", () => {
 			"pin_thread",
 			"snooze_thread",
 			"mark_done",
-		];
-		for (const name of expected) {
-			expect(names).toContain(name);
-		}
+			"compose_email",
+			"reply_to_thread",
+			"reply_all_to_thread",
+			"save_draft",
+			"list_drafts",
+			"send_draft",
+			"discard_draft",
+		]);
 	});
 
 	it("every tool has a non-empty description", () => {
