@@ -75,6 +75,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Draft rows are excluded from every thread-scoped read and action, not
+  just the inbox list: the thread view, MCP `get_thread` and
+  `search_messages`, and the thread-wide mark-read / pin / snooze /
+  mark-done fan-outs all skip drafts. Previously a reply draft rendered
+  inside its thread and was silently converted to a sent-looking row
+  (destroying the draft) when the thread was marked done or snoozed.
+- Inbound messages persist every To and Cc recipient (`toAll` / `cc`),
+  so reply-all derives the full recipient set. Previously only the
+  primary To address survived ingest.
+- Closing the composer (back link or Escape) keeps an explicitly saved
+  draft; only the Discard button deletes it.
 - Compatibility with EmDash 0.14+. The host introduced explicit
   capability gates on email hook registration in 0.14:
   `email:deliver` now requires `hooks.email-transport:register` and
