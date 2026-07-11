@@ -1,7 +1,7 @@
 import type { PluginAdminExports } from "emdash";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
-import { FilterTabs, type StatusFilter } from "./components/FilterTabs";
+import { FilterTabs, type StatusFilter, type TabId } from "./components/FilterTabs";
 import { ThreadCard } from "./components/ThreadCard";
 import type { ThreadSummary } from "./lib/threadSummary";
 import { SnoozePicker } from "./components/SnoozePicker";
@@ -10,12 +10,13 @@ import { EmptyState } from "./components/EmptyState";
 import { SkeletonList } from "./components/SkeletonList";
 import { ThreadView } from "./components/ThreadView";
 import { ComposeView } from "./components/ComposeView";
+import { DraftCard, type DraftListItem } from "./components/DraftCard";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
-function readStatusFromUrl(): StatusFilter {
+function readStatusFromUrl(): TabId {
 	const s = new URLSearchParams(window.location.search).get("status");
-	return s === "snoozed" || s === "done" || s === "all" ? s : "inbox";
+	return s === "snoozed" || s === "done" || s === "all" || s === "drafts" ? s : "inbox";
 }
 
 function readMessageFromUrl(): string | null {
@@ -30,7 +31,7 @@ function readComposeFromUrl(): string | null {
 	return new URLSearchParams(window.location.search).get("compose");
 }
 
-function writeUrl(status: StatusFilter, messageId: string | null, composeId: string | null) {
+function writeUrl(status: TabId, messageId: string | null, composeId: string | null) {
 	const url = new URL(window.location.href);
 	if (status === "inbox") url.searchParams.delete("status");
 	else url.searchParams.set("status", status);
@@ -42,10 +43,11 @@ function writeUrl(status: StatusFilter, messageId: string | null, composeId: str
 }
 
 function InboxPage() {
-	const [status, setStatus] = React.useState<StatusFilter>(readStatusFromUrl);
+	const [status, setStatus] = React.useState<TabId>(readStatusFromUrl);
 	const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(readMessageFromUrl);
 	const [composeId, setComposeId] = React.useState<string | null>(readComposeFromUrl);
 	const [rows, setRows] = React.useState<ThreadSummary[]>([]);
+	const [drafts, setDrafts] = React.useState<DraftListItem[]>([]);
 	const [loading, setLoading] = React.useState(true);
 	const [error, setError] = React.useState<string | null>(null);
 	const [snoozingThread, setSnoozingThread] = React.useState<ThreadSummary | null>(null);
@@ -73,10 +75,30 @@ function InboxPage() {
 		}
 	}, []);
 
+	const refetchDrafts = React.useCallback(async () => {
+		setLoading(true);
+		setError(null);
+		try {
+			const res = await apiFetch(`${API}/messages/drafts`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "{}",
+			});
+			const data = await parseApiResponse<{ items: DraftListItem[] }>(res, "Failed to load drafts");
+			setDrafts(data.items);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setLoading(false);
+		}
+	}, []);
+
 	React.useEffect(() => {
 		writeUrl(status, selectedMessageId, composeId);
-		if (!selectedMessageId && !composeId) void refetch(status);
-	}, [status, selectedMessageId, composeId, refetch]);
+		if (!selectedMessageId && composeId === null) {
+			status === "drafts" ? void refetchDrafts() : void refetch(status);
+		}
+	}, [status, selectedMessageId, composeId, refetch, refetchDrafts]);
 
 	const handleOpen = (openMessageId: string) => setSelectedMessageId(openMessageId);
 	const handleBack = () => setSelectedMessageId(null);
@@ -105,8 +127,10 @@ function InboxPage() {
 					setError(`Failed to update thread (${failedCount}/${summary.messageIds.length} messages).`);
 				} else if (failedCount > 0) {
 					setError(`Partial update: ${failedCount}/${summary.messageIds.length} messages failed.`);
-					// Refetch to resync the UI with the partially-updated DB state.
-					void refetch(status);
+					// Refetch to resync the UI with the partially-updated DB state. This fan-out
+					// only runs from ThreadCard actions, which never render on the drafts tab —
+					// the guard keeps the type checker honest about that invariant.
+					if (status !== "drafts") void refetch(status);
 				}
 			} finally {
 				setBusyThreadIds((s) => {
@@ -169,10 +193,11 @@ function InboxPage() {
 		return (
 			<div className="space-y-6">
 				<ComposeView
+					key={composeId}
 					draftId={composeId === "new" ? null : composeId}
 					onClose={() => {
 						setComposeId(null);
-						void refetch(status);
+						status === "drafts" ? void refetchDrafts() : void refetch(status);
 					}}
 				/>
 			</div>
@@ -186,9 +211,6 @@ function InboxPage() {
 			</div>
 		);
 	}
-
-	const bucketField: "sortAt" | "snoozeUntil" = status === "snoozed" ? "snoozeUntil" : "sortAt";
-	const bucketDirection = status === "snoozed" ? "future" : "past";
 
 	return (
 		<div className="space-y-6">
@@ -216,7 +238,21 @@ function InboxPage() {
 				</div>
 			)}
 
-			{loading ? (
+			{status === "drafts" ? (
+				loading ? (
+					<SkeletonList />
+				) : drafts.length === 0 ? (
+					<div className="border border-dashed rounded-lg p-12 text-center text-sm text-muted-foreground">
+						No drafts. Start one with “New email”.
+					</div>
+				) : (
+					<div className="space-y-2">
+						{drafts.map((d) => (
+							<DraftCard key={d.id} draft={d} onOpen={(id) => setComposeId(id)} />
+						))}
+					</div>
+				)
+			) : loading ? (
 				<SkeletonList />
 			) : rows.length === 0 ? (
 				<EmptyState status={status} />
@@ -224,8 +260,8 @@ function InboxPage() {
 				<div className="relative">
 					<DateBuckets
 						rows={rows}
-						field={bucketField}
-						direction={bucketDirection}
+						field={status === "snoozed" ? "snoozeUntil" : "sortAt"}
+						direction={status === "snoozed" ? "future" : "past"}
 						renderRow={(row) => (
 							<ThreadCard
 								key={row.id}
