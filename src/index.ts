@@ -1028,7 +1028,7 @@ export function createPlugin() {
 				handler: async (routeCtx) => {
 					await ensureMigrations(routeCtx);
 					const { dispatchMcpRequest } = await import("./lib/inboxMcpHandlers");
-					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {});
+					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {}, deliverEmail);
 				},
 			},
 
