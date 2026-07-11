@@ -109,6 +109,9 @@ async function persistOutbound(
 	event: {
 		message: {
 			to: string;
+			toAll?: string[];
+			cc?: string[];
+			bcc?: string[];
 			subject: string;
 			text: string;
 			html?: string;
@@ -117,7 +120,7 @@ async function persistOutbound(
 		source: string;
 	},
 	senderAddress: string,
-): Promise<void> {
+): Promise<{ id: string; threadId: string }> {
 	const now = new Date().toISOString();
 	const msgId = crypto.randomUUID();
 	const senderDomain = senderAddress.split("@")[1] ?? "emdash-inbox.local";
@@ -147,6 +150,9 @@ async function persistOutbound(
 		direction: "outbound",
 		from: senderAddress,
 		to: event.message.to,
+		toAll: event.message.toAll ?? [event.message.to],
+		cc: event.message.cc ?? [],
+		bcc: event.message.bcc ?? [],
 		subject: event.message.subject,
 		bodyText: event.message.text,
 		bodyHtml: event.message.html ?? null,
@@ -185,6 +191,8 @@ async function persistOutbound(
 				outboundCount: 1,
 			};
 	await ctx.storage.contacts.put(contactId, contact);
+
+	return { id: msgId, threadId: derivedThreadId };
 }
 
 /**
@@ -501,10 +509,19 @@ async function persistInbound(
 async function deliverEmail(
 	ctx: any,
 	event: {
-		message: { to: string; subject: string; text: string; html?: string; inReplyTo?: string };
+		message: {
+			to: string;
+			toAll?: string[];
+			cc?: string[];
+			bcc?: string[];
+			subject: string;
+			text: string;
+			html?: string;
+			inReplyTo?: string;
+		};
 		source: string;
 	},
-): Promise<void> {
+): Promise<{ id: string; threadId: string } | null> {
 	const kv = ctx.kv as { get<T>(key: string): Promise<T | null> };
 	const senderAddress = await kv.get<string>(SETTINGS.senderAddress);
 
@@ -534,12 +551,14 @@ async function deliverEmail(
 	}
 
 	const payload: Parameters<EmailBinding["send"]>[0] = {
-		to: event.message.to,
+		to: event.message.toAll ?? event.message.to,
 		from: senderAddress,
 		subject: event.message.subject,
 		text: event.message.text,
 	};
 	if (event.message.html) payload.html = event.message.html;
+	if (event.message.cc?.length) payload.cc = event.message.cc;
+	if (event.message.bcc?.length) payload.bcc = event.message.bcc;
 	if (event.message.inReplyTo) {
 		payload.headers = {
 			"In-Reply-To": event.message.inReplyTo,
@@ -567,12 +586,13 @@ async function deliverEmail(
 	});
 
 	try {
-		await persistOutbound(ctx, event, senderAddress);
+		return await persistOutbound(ctx, event, senderAddress);
 	} catch (err) {
 		ctx.log.error("emdash-inbox: failed to persist outbound", {
 			to: event.message.to,
 			error: err instanceof Error ? err.message : String(err),
 		});
+		return null;
 	}
 }
 

@@ -11,11 +11,13 @@
  */
 export interface EmailBinding {
 	send(payload: {
-		to: string;
+		to: string | string[];
 		from: string;
 		subject: string;
 		text?: string;
 		html?: string;
+		cc?: string[];
+		bcc?: string[];
 		headers?: Record<string, string>;
 	}): Promise<{ messageId?: string }>;
 }
