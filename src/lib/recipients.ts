@@ -67,7 +67,7 @@ export function deriveReplyAll(
 	senderAddress: string,
 ): { to: string[]; cc: string[] } {
 	const self = senderAddress.trim().toLowerCase();
-	const replyTo = latest.from;
+	const replyTo = latest.from.trim();
 
 	const seen = new Set<string>([replyTo.toLowerCase()]);
 	if (self !== "") seen.add(self);
