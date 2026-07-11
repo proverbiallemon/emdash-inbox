@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Verified against EmDash 0.29.0; dev dep on `emdash` bumped from
+  `^0.14.0` to `^0.29.0` (same nested-resolution reasoning as the
+  0.14 bump below — the bundled `definePlugin` import must resolve
+  to a version whose capability list matches the host's). No plugin
+  code changes were required: typecheck, build, and all 82 tests
+  pass unchanged, and the full pipeline (provider registration,
+  inbound ingest, admin UI, thread actions, `messages/mcp` JSON-RPC)
+  was verified end-to-end against a 0.29.0 host.
+- Documented the relationship to the first-party `cloudflare-email`
+  provider plugin that ships with `@emdash-cms/cloudflare` since
+  0.29: it is send-only, while emdash-inbox must be the selected
+  `email:deliver` provider to record outbound mail (persistence has
+  to happen inside the deliver hook — `email:afterSend` is
+  fire-and-forget on Workers, and system mail bypasses the observer
+  hooks entirely). README explains which to pick and why.
+- Documented two host-side requirements that accumulated upstream
+  between 0.14 and 0.29:
+  - EmDash 0.19 moved scheduled work on Workers to a real Cron
+    Trigger; hosts must re-export the scheduled handler from
+    `@emdash-cms/cloudflare/worker` and declare
+    `"triggers": { "crons": [...] }` in `wrangler.jsonc`, or snoozed
+    messages never wake (README operator setup step 6).
+  - EmDash 0.28.1 requires the `plugins:manage` permission and the
+    `X-EmDash-Request` header on every private plugin route method,
+    including GET. The bundled admin UI already complies via
+    `apiFetch`; external API consumers and sub-admin roles may need
+    adjusting (README troubleshooting).
+
 ### Fixed
 
 - Compatibility with EmDash 0.14+. The host introduced explicit

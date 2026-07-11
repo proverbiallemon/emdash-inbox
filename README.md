@@ -10,13 +10,19 @@ Outbound goes through the native Cloudflare Email Sending Workers binding — no
 
 **Pre-alpha (v0.7.0).** The plugin works end-to-end for outbound + inbound + threading + reply + grouped inbox with per-message read state. M1–M7 shipped: outbound and inbound email work end-to-end via the native CF Email Sending binding; the admin page is a card-based Inbox with pin / snooze / done, filter tabs, date buckets, and a cron-driven wake path for snoozed messages; clicking a card opens a thread-grouped detail view with sanitized HTML body rendering and thread-level bulk actions; the thread view has an inline TipTap-based reply form (pre-filled To / Subject / quoted body, Cmd+Enter to send); the inbox list collapses messages to one card per thread with participant chips, message-count badge, and a faded second snippet when the thread has history; and an admin-auth MCP route (`messages/mcp`) exposes 7 inbox tools over JSON-RPC 2.0. Inbox list aggregates threads client-side over all messages on every list-view fetch — fine for personal mailboxes (<5K messages), revisit before v1.0 if running at higher volumes.
 
-Built against EmDash v0.14.0 (bumped from 0.12 — see CHANGELOG). Expect breaking changes between commits as EmDash itself matures.
+Built against EmDash v0.29.0 (bumped from 0.14 — see CHANGELOG). Expect breaking changes between commits as EmDash itself matures.
 
 ## Why this exists
 
 EmDash (Cloudflare's WordPress successor, released April 2026) ships with a plugin system, a media library, content types, and an MCP server — but not with email. Cloudflare Email Service (public beta, April 2026) provides a native Workers binding for sending and a receive pipeline via Email Workers.
 
 `emdash-inbox` is the missing piece: one plugin that makes EmDash a CMS *and* an email client, using the platform Cloudflare stack underneath.
+
+### Relationship to `@emdash-cms/cloudflare`'s `cloudflare-email` plugin
+
+Since 0.29 the Cloudflare adapter ships a first-party `cloudflare-email` provider plugin. It is send-only: it forwards messages to the `send_email` binding and stops there — no mailbox, no inbound path, no threading headers, no record of what was sent. If all you need is "magic links get delivered," use it and skip this plugin entirely.
+
+`emdash-inbox` replaces it rather than stacking on top of it. EmDash routes all outbound mail through a single exclusive `email:deliver` provider, and this plugin records messages inside that hook — it is the only point in the pipeline where every outbound message (including system mail, which skips the observer hooks) can be captured. Practical consequence: **if both plugins are installed, select `emdash-inbox` under Settings → Email.** With `cloudflare-email` selected instead, mail still sends, but outbound messages never appear in the inbox.
 
 ## Operator setup
 
@@ -30,6 +36,16 @@ EmDash (Cloudflare's WordPress successor, released April 2026) ships with a plug
 3. **Wire the plugin into `astro.config.mjs`** alongside the existing `ssr.noExternal: ["emdash-inbox"]` entry. Under EmDash 0.12 the plugin's runtime deps (TipTap, dompurify, postal-mime) also want to be listed in `vite.ssr.noExternal` to avoid Vite optimizer cascades during dev — the browser still serves correctly without it, the cascades are just noisy.
 4. **Configure plugin settings** in the admin: `senderAddress` (your verified sender) and `inboundSecret` (a long random string shared with the inbound sidecar worker).
 5. **Deploy the inbound sidecar Worker** under `examples/inbound-email-worker/` and bind it to your domain via Cloudflare Email Routing. The sidecar POSTs raw RFC822 to `POST /_emdash/api/plugins/emdash-inbox/inbound`, gated by `X-Inbound-Secret` matching the value you configured in step 4.
+6. **Enable a Cron Trigger on the host Worker** (EmDash ≥ 0.19). EmDash no longer piggybacks scheduled work on requests; without a Cron Trigger, snoozed messages never wake back to the inbox (and EmDash's own scheduled publishing stalls too). Your host's `src/worker.ts` should re-export the scheduled handler, and `wrangler.jsonc` needs the trigger:
+   ```ts
+   // src/worker.ts
+   export { default, PluginBridge } from "@emdash-cms/cloudflare/worker";
+   ```
+   ```jsonc
+   // wrangler.jsonc
+   "triggers": { "crons": ["* * * * *"] }
+   ```
+   Hosts scaffolded with `create-emdash` ≥ 0.19 have this already.
 
 Operators upgrading from 0.6.x: the `accountId` and `apiToken` fields are gone — existing rows for those settings are cleared automatically on first request after upgrade. The CF API token they referenced can be revoked.
 
@@ -37,6 +53,8 @@ Operators upgrading from 0.6.x: the `accountId` and `apiToken` fields are gone �
 
 - **`No email provider configured` / `EMAIL_NOT_CONFIGURED` after install.** Tail the host worker (`wrangler tail`) and look for `[hooks] Plugin "emdash-inbox" declares email:deliver hook without hooks.email-transport:register capability — skipping`. That message means your host is on EmDash 0.14+ and is bundling an older `definePlugin` from `emdash-inbox`'s nested `node_modules`. Make sure `emdash-inbox`'s `devDependencies.emdash` matches your host's installed version (≥0.14) and rebuild the plugin with `pnpm install && pnpm build`. The current main branch is already set up for 0.14.
 - **Magic-link URL contains `localhost:4321`.** EmDash stores the base URL under the `emdash:site_url` option in the database, set during initial setup. Setting `SITE_URL` in `wrangler.jsonc` afterwards does not back-fill that row. Update it directly: `wrangler d1 execute <db> --remote --command "UPDATE options SET value='\"https://your.domain\"' WHERE name='emdash:site_url';"`
+- **Inbox admin page or `messages/*` routes return 403 for some users.** Since EmDash 0.28.1, every private plugin route requires the `plugins:manage` permission (and the `X-EmDash-Request` header) on all HTTP methods, including reads. Users below that permission tier — e.g. editors — can no longer reach the inbox API. Grant the role `plugins:manage` or have an administrator use the inbox.
+- **Snoozed messages never come back.** See operator setup step 6 — the host Worker needs a Cron Trigger on EmDash ≥ 0.19.
 
 ## Roadmap
 
