@@ -178,18 +178,24 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 		),
 	);
 
-	// Reply defaults for the plain Reply button — replies only to the latest
+	// Anchor for reply defaults: prefer the latest INBOUND row so replying
+	// prefills to the customer, not to ourselves when the newest row in the
+	// thread happens to be our own outbound message. Falls back to the literal
+	// last row only for outbound-only threads — mirrors replySend's rule on
+	// the server (src/lib/composeOps.ts).
+	const anchor = [...thread].reverse().find((r) => r.data.direction === "inbound") ?? thread[thread.length - 1];
+
+	// Reply defaults for the plain Reply button — replies only to the anchor
 	// message's sender/recipient, quoting its body.
 	const buildReplyDefaults = (): ReplyComposeDefaults => {
-		const latest = thread[thread.length - 1];
 		return replyDefaults({
-			direction: latest.data.direction,
-			from: latest.data.from,
-			to: latest.data.to,
-			subject: latest.data.subject,
-			bodyText: latest.data.bodyText,
-			bodyHtml: latest.data.bodyHtml,
-			receivedAt: latest.data.receivedAt,
+			direction: anchor.data.direction,
+			from: anchor.data.from,
+			to: anchor.data.to,
+			subject: anchor.data.subject,
+			bodyText: anchor.data.bodyText,
+			bodyHtml: anchor.data.bodyHtml,
+			receivedAt: anchor.data.receivedAt,
 		});
 	};
 
@@ -198,15 +204,14 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	// plain Reply button. Sender address for the "minus my address" filter is
 	// approximated from any outbound row's `from` in this thread.
 	const buildReplyAllDefaults = (): ReplyComposeDefaults => {
-		const latest = thread[thread.length - 1];
 		const senderAddress = thread.find((r) => r.data.direction === "outbound")?.data.from ?? "";
 		const all = deriveReplyAll(
 			{
-				direction: latest.data.direction,
-				from: latest.data.from,
-				to: latest.data.to,
-				toAll: latest.data.toAll,
-				cc: latest.data.cc,
+				direction: anchor.data.direction,
+				from: anchor.data.from,
+				to: anchor.data.to,
+				toAll: anchor.data.toAll,
+				cc: anchor.data.cc,
 			},
 			senderAddress,
 		);

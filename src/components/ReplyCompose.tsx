@@ -37,7 +37,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 	const [to, setTo] = React.useState(defaults.to);
 	const [cc, setCc] = React.useState(defaults.cc ?? "");
 	const [subject, setSubject] = React.useState(defaults.subject);
-	const [sending, setSending] = React.useState(false);
+	const [busy, setBusy] = React.useState<"send" | "save" | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
 	const [editor, setEditor] = React.useState<Editor | null>(null);
 	const [initialSnapshot, setInitialSnapshot] = React.useState<string | null>(null);
@@ -55,8 +55,8 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 	}, [editor, initialSnapshot]);
 
 	const handleSend = React.useCallback(async () => {
-		if (!editor || sending) return;
-		setSending(true);
+		if (!editor || busy) return;
+		setBusy("send");
 		setError(null);
 		const ctrl = new AbortController();
 		setAbortCtrl(ctrl);
@@ -72,21 +72,23 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 			if (!res.ok) throw new Error(await extractErrorMessage(res, `send failed (${res.status})`));
 			onSent();
 		} catch (err) {
-			// AbortError fires when the user clicks Discard mid-send. Treat as
-			// a no-op — the discard handler already calls onDiscard() to close
-			// the form, and there's nothing for the user to retry.
+			// AbortError fires when the user clicks Discard mid-send/mid-save.
+			// Treat as a no-op — the discard handler already calls onDiscard()
+			// to close the form, and there's nothing for the user to retry.
 			if (err instanceof DOMException && err.name === "AbortError") return;
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
-			setSending(false);
+			setBusy(null);
 			setAbortCtrl(null);
 		}
-	}, [editor, sending, inReplyTo, to, cc, subject, onSent]);
+	}, [editor, busy, inReplyTo, to, cc, subject, onSent]);
 
 	const handleSaveDraft = React.useCallback(async () => {
-		if (!editor || sending) return;
-		setSending(true);
+		if (!editor || busy) return;
+		setBusy("save");
 		setError(null);
+		const ctrl = new AbortController();
+		setAbortCtrl(ctrl);
 		try {
 			const res = await apiFetch(`${API}/messages/draft-save`, {
 				method: "POST",
@@ -99,28 +101,33 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 					text: editor.getText(),
 					html: editor.getHTML(),
 				}),
+				signal: ctrl.signal,
 			});
 			if (!res.ok) throw new Error(await extractErrorMessage(res, `save failed (${res.status})`));
 			onDiscard(); // close the form; the draft lives in the Drafts tab now
 		} catch (err) {
+			// AbortError fires when the user clicks Discard/Cancel mid-save.
+			if (err instanceof DOMException && err.name === "AbortError") return;
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
-			setSending(false);
+			setBusy(null);
+			setAbortCtrl(null);
 		}
-	}, [editor, sending, threadId, to, cc, subject, onDiscard]);
+	}, [editor, busy, threadId, to, cc, subject, onDiscard]);
 
 	const handleDiscard = React.useCallback(() => {
-		// Mid-send: cancel the in-flight request and close immediately. The user
-		// explicitly chose to abandon the send, so don't confirm — they're already
-		// committing to discard by clicking during "Sending…".
-		if (sending) {
+		// Mid-send or mid-save: cancel whichever request is in flight and close
+		// immediately. The user explicitly chose to abandon the operation, so
+		// don't confirm — they're already committing to discard by clicking
+		// during "Sending…"/"Saving…".
+		if (busy) {
 			abortCtrl?.abort();
 			onDiscard();
 			return;
 		}
 		if (isDirty() && !window.confirm("Discard this reply?")) return;
 		onDiscard();
-	}, [sending, abortCtrl, isDirty, onDiscard]);
+	}, [busy, abortCtrl, isDirty, onDiscard]);
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
 		if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -148,7 +155,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 					type="text"
 					className={inputClass}
 					value={to}
-					disabled={sending}
+					disabled={busy !== null}
 					onChange={(e) => setTo(e.target.value)}
 				/>
 			</label>
@@ -159,7 +166,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 						type="text"
 						className={inputClass}
 						value={cc}
-						disabled={sending}
+						disabled={busy !== null}
 						onChange={(e) => setCc(e.target.value)}
 					/>
 				</label>
@@ -170,7 +177,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 					type="text"
 					className={inputClass}
 					value={subject}
-					disabled={sending}
+					disabled={busy !== null}
 					onChange={(e) => setSubject(e.target.value)}
 				/>
 			</label>
@@ -180,25 +187,25 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 				<button
 					type="button"
 					className="text-sm px-4 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-					disabled={sending || !editor}
+					disabled={busy !== null || !editor}
 					onClick={() => void handleSend()}
 				>
-					{sending ? "Sending…" : "Send"}
+					{busy === "send" ? "Sending…" : "Send"}
 				</button>
 				<button
 					type="button"
 					className="text-sm px-4 py-1.5 rounded border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-					disabled={sending || !editor}
+					disabled={busy !== null || !editor}
 					onClick={() => void handleSaveDraft()}
 				>
-					Save draft
+					{busy === "save" ? "Saving…" : "Save draft"}
 				</button>
 				<button
 					type="button"
 					className="text-sm px-4 py-1.5 rounded border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
 					onClick={handleDiscard}
 				>
-					{sending ? "Cancel send" : "Discard"}
+					{busy !== null ? "Cancel" : "Discard"}
 				</button>
 			</div>
 		</div>
