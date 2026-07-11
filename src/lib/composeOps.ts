@@ -1,10 +1,11 @@
 import type { MessageDoc } from "../index";
 import { normalizeRecipients, deriveReplyAll } from "./recipients";
 import { replyDefaults, plainTextToHtml } from "./replyDefaults";
+import { isDraftRow } from "./threadSummary";
 
 /**
- * Shared compose/draft operations. Both the HTTP routes (M8 Task 5) and the
- * MCP handlers (M8 Task 6) call these — the routing layer only translates
+ * Shared compose/draft operations. Both the messages/* HTTP routes and the
+ * MCP tool handlers call these — the routing layer only translates
  * transport-specific input/output shapes and error types; all decisions
  * (recipient math, subject defaulting, quote-body assembly, draft upsert
  * rules, the "delete-then-deliver-then-restore-on-failure" send sequence)
@@ -103,7 +104,7 @@ async function loadThreadRows(ctx: any, threadId: string): Promise<{ id: string;
 		limit: 500,
 	});
 	const rows = (result.items ?? []) as { id: string; data: MessageDoc }[];
-	return rows.filter((r) => r.data.status !== "draft");
+	return rows.filter((r) => !isDraftRow(r));
 }
 
 export async function composeSend(

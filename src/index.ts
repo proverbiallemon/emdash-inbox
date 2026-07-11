@@ -4,7 +4,7 @@ import { DeliverError, wrapBindingError, type EmailBinding } from "./lib/cfBindi
 import PostalMime from "postal-mime";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
-import { aggregateThreads, type StatusFilter } from "./lib/threadSummary";
+import { aggregateThreads, isDraftRow, type StatusFilter } from "./lib/threadSummary";
 import {
 	composeSend,
 	replySend,
@@ -863,13 +863,20 @@ export function createPlugin() {
 						limit: 500,
 					});
 
+					// Drafts are invisible outside the drafts surfaces (M8 §Data model):
+					// exclude before both the mark-read side effect and the response so a
+					// draft is never marked read nor returned as part of the thread.
+					const items = ((result.items ?? []) as { id: string; data: any }[]).filter(
+						(r) => !isDraftRow(r),
+					);
+
 					// Side-effect: mark every unread message in this thread read. Wrapped so a
 					// write failure doesn't fail the fetch — same defensive pattern as
 					// persistOutbound inside deliverEmail. Returned items are the pre-write
 					// snapshot; the inbox list re-fetches on back-navigation and sees the
 					// updated state.
 					try {
-						for (const r of result.items as { id: string; data: any }[]) {
+						for (const r of items) {
 							if (r.data.read === false) {
 								await (routeCtx.storage as any).messages.put(r.id, {
 									...r.data,
@@ -884,7 +891,7 @@ export function createPlugin() {
 						});
 					}
 
-					return { items: result.items };
+					return { items };
 				},
 			},
 
@@ -897,7 +904,6 @@ export function createPlugin() {
 						| null;
 
 					const inReplyTo = typeof input?.inReplyTo === "string" ? input.inReplyTo.trim() : "";
-					const to = typeof input?.to === "string" ? input.to.trim() : "";
 					const subject = typeof input?.subject === "string" ? input.subject.trim() : "";
 					const text = typeof input?.text === "string" ? input.text : "";
 					const html = typeof input?.html === "string" ? input.html : "";
@@ -905,9 +911,19 @@ export function createPlugin() {
 					if (!inReplyTo) {
 						throw PluginRouteError.badRequest("inReplyTo: required non-empty string");
 					}
-					if (!to || !/^\S+@\S+\.\S+$/.test(to)) {
-						throw PluginRouteError.badRequest("to: required, must look like an email address");
+
+					// `to` accepts the same string | string[] shapes as compose/reply-all —
+					// split/validate/dedupe via normalizeRecipients, mirroring `cc` below.
+					const toInput = input?.to as string | string[] | undefined;
+					const toResult = normalizeRecipients(toInput);
+					if (!toResult.ok) {
+						throw PluginRouteError.badRequest(toResult.error);
 					}
+					const toList = toResult.value;
+					if (toList.length === 0) {
+						throw PluginRouteError.badRequest("to: required, must be one or more valid email addresses");
+					}
+
 					if (!subject) {
 						throw PluginRouteError.badRequest("subject: required non-empty string");
 					}
@@ -937,7 +953,15 @@ export function createPlugin() {
 
 					try {
 						await deliverEmail(routeCtx, {
-							message: { to, subject, text, html, inReplyTo, ...(cc.length ? { cc } : {}) },
+							message: {
+								to: toList[0],
+								toAll: toList,
+								subject,
+								text,
+								html,
+								inReplyTo,
+								...(cc.length ? { cc } : {}),
+							},
 							source: "emdash-inbox:reply",
 						});
 					} catch (err) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { aggregateThreads } from "./threadSummary";
+import { aggregateThreads, isDraftRow } from "./threadSummary";
 import type { MessageDoc } from "../index";
 
 const SENDER = "PocketBear@harildkyler.com";
@@ -176,5 +176,22 @@ describe("draft exclusion (M8)", () => {
 			row("d1", { status: "draft", threadId: "t9", receivedAt: "2026-07-09T00:00:00Z", direction: "outbound" }),
 		];
 		expect(aggregateThreads(rows, "all", SENDER)).toHaveLength(0);
+	});
+});
+
+describe("isDraftRow", () => {
+	it("is true for a row with status draft", () => {
+		expect(isDraftRow(row("d1", { status: "draft" }))).toBe(true);
+	});
+
+	it("is false for non-draft statuses", () => {
+		for (const status of ["inbox", "snoozed", "done", "archived"] as const) {
+			expect(isDraftRow(row("m1", { status }))).toBe(false);
+		}
+	});
+
+	it("accepts any row shape with a data.status field, not just full MessageDoc rows", () => {
+		expect(isDraftRow({ data: { status: "draft" } })).toBe(true);
+		expect(isDraftRow({ data: { status: "inbox" } })).toBe(false);
 	});
 });

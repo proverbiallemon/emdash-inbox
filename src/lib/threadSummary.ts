@@ -24,6 +24,19 @@ interface MessageRow {
 }
 
 /**
+ * True for unsent drafts (`status: "draft"`). Drafts are not real messages —
+ * they must be invisible to every thread-scoped read and untouchable by
+ * every thread-scoped mutation outside the drafts surfaces (`messages/drafts`,
+ * `save_draft`/`send_draft`/`discard_draft`). Single definition, used by
+ * `aggregateThreads` below, `composeOps.loadThreadRows`, the `messages/thread`
+ * route, and the MCP `get_thread`/`search_messages`/`mark_read`/`pin_thread`/
+ * `snooze_thread`/`mark_done` handlers.
+ */
+export function isDraftRow(row: { data: { status: string } }): boolean {
+	return row.data.status === "draft";
+}
+
+/**
  * Group messages by threadId, derive a summary per thread, filter by latest-
  * message status, sort with pinned threads floating to top within the result
  * window. Latest-message-wins is the rule for tab placement (M6 design §1).
@@ -42,7 +55,7 @@ export function aggregateThreads(
 	// their own tab backed by `messages/drafts`. Filtering here — the single
 	// entry point — keeps latest-message-wins, snippets, and unread counts
 	// draft-free everywhere.
-	messages = messages.filter((r) => r.data.status !== "draft");
+	messages = messages.filter((r) => !isDraftRow(r));
 
 	// Group by threadId. Defensive fallback to messageId for the (post-M4
 	// shouldn't-happen) case where threadId is null.

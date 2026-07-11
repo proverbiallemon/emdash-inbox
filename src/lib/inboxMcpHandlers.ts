@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { listInboxTools, type InboxToolName } from "./inboxMcpTools";
-import { aggregateThreads, type StatusFilter } from "./threadSummary";
+import { aggregateThreads, isDraftRow, type StatusFilter } from "./threadSummary";
 import { composeSend, replySend, draftSave, draftSend, draftDiscard, listDrafts, type Deliver } from "./composeOps";
 import { draftSummaryOf } from "./draftSummary";
 
@@ -70,6 +70,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			return rows
+				.filter((r) => !isDraftRow(r))
 				.map((r) => r.data)
 				.filter((m: any) => (m.threadId ?? m.messageId) === threadId)
 				.sort((a: any, b: any) =>
@@ -83,6 +84,7 @@ export async function runInboxToolHandler(
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const q = query.toLowerCase();
 			return rows
+				.filter((r) => !isDraftRow(r))
 				.map((r) => r.data)
 				.filter(
 					(m: any) =>
@@ -97,7 +99,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, { ...row.data, read });
@@ -110,7 +112,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, { ...row.data, pinned });
@@ -123,7 +125,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, {
@@ -141,7 +143,7 @@ export async function runInboxToolHandler(
 			const all = await messages.query({ limit: 10000 });
 			const rows = (all.items ?? []) as { id: string; data: any }[];
 			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId,
+				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
 			);
 			for (const row of targets) {
 				await messages.put(row.id, {
