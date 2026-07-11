@@ -24,6 +24,14 @@ interface Props {
 	onClose: () => void;
 }
 
+interface ComposeSnapshot {
+	to: string;
+	cc: string;
+	bcc: string;
+	subject: string;
+	editorHTML: string;
+}
+
 export function ComposeView({ draftId, onClose }: Props) {
 	const [to, setTo] = React.useState("");
 	const [cc, setCc] = React.useState("");
@@ -35,6 +43,10 @@ export function ComposeView({ draftId, onClose }: Props) {
 	const [editor, setEditor] = React.useState<Editor | null>(null);
 	const [busy, setBusy] = React.useState<"send" | "save" | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
+	// Fields as of the last successful save; null until something has been
+	// saved (fresh compose) or set from the loaded draft (resumed compose).
+	// Used to decide whether closing needs a confirmation.
+	const [savedSnapshot, setSavedSnapshot] = React.useState<ComposeSnapshot | null>(null);
 
 	// Resume: load the draft's fields before mounting the editor.
 	React.useEffect(() => {
@@ -51,8 +63,17 @@ export function ComposeView({ draftId, onClose }: Props) {
 				setCc(draft.cc.join(", "));
 				setBcc(draft.bcc.join(", "));
 				setShowCcBcc(draft.cc.length > 0 || draft.bcc.length > 0);
-				setSubject(draft.subject === "(no subject)" ? "" : draft.subject);
-				setInitialHtml(draft.bodyHtml ?? plainTextToHtml(draft.bodyText));
+				const loadedSubject = draft.subject === "(no subject)" ? "" : draft.subject;
+				const loadedHtml = draft.bodyHtml ?? plainTextToHtml(draft.bodyText);
+				setSubject(loadedSubject);
+				setInitialHtml(loadedHtml);
+				setSavedSnapshot({
+					to: draft.to.join(", "),
+					cc: draft.cc.join(", "),
+					bcc: draft.bcc.join(", "),
+					subject: loadedSubject,
+					editorHTML: loadedHtml,
+				});
 			} catch (err) {
 				if (!cancelled) setError(err instanceof Error ? err.message : String(err));
 			}
@@ -106,14 +127,16 @@ export function ComposeView({ draftId, onClose }: Props) {
 		setBusy("save");
 		setError(null);
 		try {
+			const html = editor.getHTML();
 			const res = await post("messages/draft-save", {
 				draftId: currentDraftId ?? undefined,
 				to, cc, bcc, subject,
 				text: editor.getText(),
-				html: editor.getHTML(),
+				html,
 			});
 			const data = (await res.json()) as { data: { draftId: string } };
 			setCurrentDraftId(data.data.draftId);
+			setSavedSnapshot({ to, cc, bcc, subject, editorHTML: html });
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
@@ -121,14 +144,30 @@ export function ComposeView({ draftId, onClose }: Props) {
 		}
 	};
 
-	const handleDiscard = async () => {
-		// Guard against the "← Inbox" link and the Escape shortcut, neither of
-		// which is disabled while busy the way the Discard button is — without
-		// this, closing mid-send/mid-save unmounts the view while the request
-		// is still in flight.
+	const hasAnyContent = () => {
+		const dirty = editor ? editor.getText().trim() !== "" : false;
+		return dirty || Boolean(to) || Boolean(cc) || Boolean(bcc) || Boolean(subject);
+	};
+
+	// "← Inbox" and Escape: never deletes a saved draft. Only asks for
+	// confirmation when there's something that hasn't been saved yet.
+	const handleClose = () => {
 		if (busy) return;
-		const dirty = editor && editor.getText().trim() !== "";
-		if ((dirty || to || subject) && !window.confirm("Discard this email?")) return;
+		if (savedSnapshot) {
+			const current: ComposeSnapshot = { to, cc, bcc, subject, editorHTML: editor ? editor.getHTML() : "" };
+			const changed = (Object.keys(current) as (keyof ComposeSnapshot)[]).some((key) => current[key] !== savedSnapshot[key]);
+			if (changed && !window.confirm("Close without saving your changes?")) return;
+		} else if (hasAnyContent() && !window.confirm("Close without saving your changes?")) {
+			return;
+		}
+		onClose();
+	};
+
+	// Discard button: deletes the persisted draft (if any) after confirming,
+	// since this is the explicit "throw this away" action.
+	const handleDiscard = async () => {
+		if (busy) return;
+		if ((hasAnyContent() || currentDraftId) && !window.confirm("Discard this email?")) return;
 		if (currentDraftId) {
 			try {
 				await post("messages/draft-discard", { draftId: currentDraftId });
@@ -143,7 +182,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 			void handleSend();
 		} else if (e.key === "Escape") {
 			e.preventDefault();
-			void handleDiscard();
+			handleClose();
 		}
 	};
 
@@ -152,7 +191,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 
 	return (
 		<div className="space-y-4" onKeyDown={onKeyDown}>
-			<button type="button" className="text-sm text-muted-foreground hover:text-foreground" onClick={() => void handleDiscard()}>
+			<button type="button" className="text-sm text-muted-foreground hover:text-foreground" onClick={handleClose}>
 				← Inbox
 			</button>
 			<h1 className="text-3xl font-bold">{draftId ? "Edit draft" : "New email"}</h1>
