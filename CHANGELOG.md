@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass unchanged, and the full pipeline (provider registration,
   inbound ingest, admin UI, thread actions, `messages/mcp` JSON-RPC)
   was verified end-to-end against a 0.29.0 host.
+- Documented the relationship to the first-party `cloudflare-email`
+  provider plugin that ships with `@emdash-cms/cloudflare` since
+  0.29: it is send-only, while emdash-inbox must be the selected
+  `email:deliver` provider to record outbound mail (persistence has
+  to happen inside the deliver hook — `email:afterSend` is
+  fire-and-forget on Workers, and system mail bypasses the observer
+  hooks entirely). README explains which to pick and why.
 - Documented two host-side requirements that accumulated upstream
   between 0.14 and 0.29:
   - EmDash 0.19 moved scheduled work on Workers to a real Cron

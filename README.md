@@ -18,6 +18,12 @@ EmDash (Cloudflare's WordPress successor, released April 2026) ships with a plug
 
 `emdash-inbox` is the missing piece: one plugin that makes EmDash a CMS *and* an email client, using the platform Cloudflare stack underneath.
 
+### Relationship to `@emdash-cms/cloudflare`'s `cloudflare-email` plugin
+
+Since 0.29 the Cloudflare adapter ships a first-party `cloudflare-email` provider plugin. It is send-only: it forwards messages to the `send_email` binding and stops there — no mailbox, no inbound path, no threading headers, no record of what was sent. If all you need is "magic links get delivered," use it and skip this plugin entirely.
+
+`emdash-inbox` replaces it rather than stacking on top of it. EmDash routes all outbound mail through a single exclusive `email:deliver` provider, and this plugin records messages inside that hook — it is the only point in the pipeline where every outbound message (including system mail, which skips the observer hooks) can be captured. Practical consequence: **if both plugins are installed, select `emdash-inbox` under Settings → Email.** With `cloudflare-email` selected instead, mail still sends, but outbound messages never appear in the inbox.
+
 ## Operator setup
 
 1. **Onboard your sender domain to Cloudflare Email Sending** (Dashboard -> Compute & AI -> Email Service -> Email Sending -> Onboard Domain). One-time.
