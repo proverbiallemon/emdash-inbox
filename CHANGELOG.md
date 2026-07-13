@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Git-dependency installs (`npm install github:...`) are importable again:
+  a `prepare` script now runs the tsdown build on the consumer side, so
+  `dist/` exists where `exports` points. Previously the git tree shipped
+  only `src/` and imports failed with `MODULE_NOT_FOUND`.
+
 ## [0.8.0] — 2026-07-11
 
 ### Added
