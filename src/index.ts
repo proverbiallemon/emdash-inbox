@@ -1072,8 +1072,12 @@ export function createPlugin() {
 						SETTINGS.inboundSecret,
 					);
 					if (!expected) {
-						throw PluginRouteError.internal(
-							"inbound endpoint not configured — set settings:inboundSecret",
+						// unauthorized (401), not internal (500): emdash masks internal
+						// messages to "Plugin route error" on the wire, which reads as a
+						// crash to an operator mid-setup. No secret configured means no
+						// caller can authenticate yet — say so plainly.
+						throw PluginRouteError.unauthorized(
+							"inbound endpoint not configured — set the inboundSecret plugin setting, then retry",
 						);
 					}
 					// X-Inbound-Secret header (not Authorization/Bearer — emdash's auth

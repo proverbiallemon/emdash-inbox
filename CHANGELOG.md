@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `POST inbound` with no `inboundSecret` configured now returns 401 with
+  an operator-actionable message instead of a masked 500 ("Plugin route
+  error") — the unconfigured state read as a crash during host setup.
 - Git-dependency installs (`npm install github:...`) are importable again:
   a `prepare` script now runs the tsdown build on the consumer side, so
   `dist/` exists where `exports` points. Previously the git tree shipped
