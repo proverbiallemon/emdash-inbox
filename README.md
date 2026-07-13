@@ -33,7 +33,16 @@ Since 0.29 the Cloudflare adapter ships a first-party `cloudflare-email` provide
      { "name": "EMAIL", "remote": true }
    ]
    ```
-3. **Wire the plugin into `astro.config.mjs`** alongside the existing `ssr.noExternal: ["emdash-inbox"]` entry. Under EmDash 0.12 the plugin's runtime deps (TipTap, dompurify, postal-mime) also want to be listed in `vite.ssr.noExternal` to avoid Vite optimizer cascades during dev — the browser still serves correctly without it, the cascades are just noisy.
+3. **Wire the plugin into `astro.config.mjs`.** Register the named `emdashInboxPlugin` export — not the package's default export, which is the plugin runtime and fails at config load with `Plugin "emdash-inbox" has no entrypoint`:
+   ```js
+   import { emdashInboxPlugin } from "emdash-inbox";
+
+   emdash({
+     // ...database, storage...
+     plugins: [emdashInboxPlugin()],
+   })
+   ```
+   Add `"emdash-inbox"` to `vite.ssr.noExternal`. The plugin's runtime deps (`@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/pm`, `@tiptap/core`, `dompurify`, `postal-mime`) also want to be listed there to avoid Vite optimizer cascades during dev — the browser still serves correctly without them, the cascades are just noisy.
 4. **Configure plugin settings** in the admin: `senderAddress` (your verified sender) and `inboundSecret` (a long random string shared with the inbound sidecar worker).
 5. **Deploy the inbound sidecar Worker** under `examples/inbound-email-worker/` and bind it to your domain via Cloudflare Email Routing. The sidecar POSTs raw RFC822 to `POST /_emdash/api/plugins/emdash-inbox/inbound`, gated by `X-Inbound-Secret` matching the value you configured in step 4.
 6. **Enable a Cron Trigger on the host Worker** (EmDash ≥ 0.19). EmDash no longer piggybacks scheduled work on requests; without a Cron Trigger, snoozed messages never wake back to the inbox (and EmDash's own scheduled publishing stalls too). Your host's `src/worker.ts` should re-export the scheduled handler, and `wrangler.jsonc` needs the trigger:
