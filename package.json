@@ -42,6 +42,7 @@
 	],
 	"scripts": {
 		"build": "tsdown",
+		"prepare": "tsdown",
 		"typecheck": "tsc --noEmit",
 		"validate": "emdash plugin validate --dir .",
 		"test": "vitest run --passWithNoTests",
