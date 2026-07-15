@@ -91,6 +91,12 @@ export function SettingsPage() {
 
 	return (
 		<div className="space-y-6 max-w-xl">
+			<a
+				href="/_emdash/admin/plugins/emdash-inbox"
+				className="text-sm text-muted-foreground hover:text-foreground"
+			>
+				← Inbox
+			</a>
 			<div>
 				<h1 className="text-3xl font-bold">Inbox Settings</h1>
 				<p className="text-muted-foreground mt-1">

@@ -222,13 +222,22 @@ function InboxPage() {
 						All messages that passed through this site.
 					</p>
 				</div>
-				<button
-					type="button"
-					className="text-sm px-4 py-2 rounded bg-primary text-primary-foreground hover:opacity-90"
-					onClick={() => setComposeId("new")}
-				>
-					✉ New email
-				</button>
+				<div className="flex gap-2">
+					<button
+						type="button"
+						className="text-sm px-4 py-2 rounded bg-primary text-primary-foreground hover:opacity-90"
+						onClick={() => setComposeId("new")}
+					>
+						✉ New email
+					</button>
+					<a
+						href="/_emdash/admin/plugins/emdash-inbox/settings"
+						className="text-sm px-3 py-2 rounded border hover:bg-muted"
+						title="Inbox Settings"
+					>
+						⚙ Settings
+					</a>
+				</div>
 			</div>
 
 			<FilterTabs current={status} onChange={setStatus} />

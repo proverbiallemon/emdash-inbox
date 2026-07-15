@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inboundSecret` was a direct database write. The page validates
   inputs, can generate a strong inbound secret, and never re-displays
   the stored secret; the save route doubles as a headless setup API.
+- The inbox header links to the settings page (and back). EmDash's
+  Plugins-page cog always opens a plugin's root page and gives extra
+  `adminPages` entries no navigation of their own, so the plugin
+  provides its own way in.
 
 ### Fixed
 
