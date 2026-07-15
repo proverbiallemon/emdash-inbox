@@ -9,6 +9,7 @@ import { DateBuckets } from "./components/DateBuckets";
 import { EmptyState } from "./components/EmptyState";
 import { SkeletonList } from "./components/SkeletonList";
 import { ThreadView } from "./components/ThreadView";
+import { SettingsPage } from "./components/SettingsPage";
 import { ComposeView } from "./components/ComposeView";
 import { DraftCard, type DraftListItem } from "./components/DraftCard";
 
@@ -289,4 +290,5 @@ function InboxPage() {
 
 export const pages: PluginAdminExports["pages"] = {
 	"/": InboxPage as unknown as PluginAdminExports["pages"][string],
+	"/settings": SettingsPage as unknown as PluginAdminExports["pages"][string],
 };

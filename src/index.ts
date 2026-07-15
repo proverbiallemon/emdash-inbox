@@ -33,7 +33,10 @@ export function emdashInboxPlugin(): PluginDescriptor {
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
-		adminPages: [{ path: "/", label: "Inbox", icon: "envelope" }],
+		adminPages: [
+			{ path: "/", label: "Inbox", icon: "envelope" },
+			{ path: "/settings", label: "Inbox Settings", icon: "envelope" },
+		],
 		options: {},
 	};
 }
@@ -1062,6 +1065,53 @@ export function createPlugin() {
 					await ensureMigrations(routeCtx);
 					const { dispatchMcpRequest } = await import("./lib/inboxMcpHandlers");
 					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {}, deliverEmail);
+				},
+			},
+
+			// Settings read/write for the plugin's own admin page. EmDash never
+			// grew the auto-generated UI its settingsSchema type annotation
+			// promises (verified against 0.29: the schema isn't even sent to the
+			// admin frontend, and core ships no setter API), so the plugin owns
+			// this surface itself. Also curl-able with an admin token for
+			// headless setups.
+			"settings/get": {
+				handler: async (routeCtx) => {
+					const senderAddress =
+						(await routeCtx.kv.get<string>(SETTINGS.senderAddress)) ?? "";
+					const inboundSecret = await routeCtx.kv.get<string>(SETTINGS.inboundSecret);
+					// The secret itself is write-only from here — operators paste it
+					// into the sidecar at set time; the API only reports presence.
+					return { senderAddress, inboundSecretSet: Boolean(inboundSecret) };
+				},
+			},
+
+			"settings/save": {
+				handler: async (routeCtx) => {
+					const input = (routeCtx.input ?? {}) as {
+						senderAddress?: unknown;
+						inboundSecret?: unknown;
+					};
+					if (input.senderAddress !== undefined) {
+						const addr =
+							typeof input.senderAddress === "string" ? input.senderAddress.trim() : "";
+						if (addr === "" || !/^\S+@\S+\.\S+$/.test(addr)) {
+							throw PluginRouteError.badRequest(
+								"senderAddress: must be an email address on a domain onboarded for Cloudflare Email Sending",
+							);
+						}
+						await routeCtx.kv.set(SETTINGS.senderAddress, addr);
+					}
+					if (input.inboundSecret !== undefined) {
+						const secret =
+							typeof input.inboundSecret === "string" ? input.inboundSecret.trim() : "";
+						if (secret.length < 16) {
+							throw PluginRouteError.badRequest(
+								"inboundSecret: use at least 16 characters — a long random string shared only with the inbound sidecar worker",
+							);
+						}
+						await routeCtx.kv.set(SETTINGS.inboundSecret, secret);
+					}
+					return { ok: true };
 				},
 			},
 

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Inbox Settings admin page (Admin → Inbox Settings) with matching
+  `settings/get` / `settings/save` routes. EmDash never renders a
+  plugin's `settingsSchema` (the auto-generated settings UI its types
+  describe doesn't exist as of 0.29, and core ships no setter API), so
+  until now the only way to configure `senderAddress` and
+  `inboundSecret` was a direct database write. The page validates
+  inputs, can generate a strong inbound secret, and never re-displays
+  the stored secret; the save route doubles as a headless setup API.
+
 ### Fixed
 
 - `POST inbound` with no `inboundSecret` configured now returns 401 with
