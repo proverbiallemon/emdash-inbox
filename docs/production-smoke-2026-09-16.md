@@ -1,6 +1,6 @@
 # Production smoke test — September 16, 2026
 
-**Current result:** PBWeb runs EmDash 0.38.0 with Inbox 0.10.0. Durable send recovery, complete-conversation pagination, private attachments, and all 20 native MCP tools are deployed. The latest live check delivered one synthetic message to the Proton desktop app; replaying its request returned the same attempt and message IDs. All temporary tokens were revoked. The final automated run passed 432 tests across 33 files.
+**Current result:** PBWeb runs EmDash 0.38.0 with Inbox 0.10.0. Durable send recovery, complete-conversation pagination, private attachments, and all 20 native MCP tools are deployed. The latest live check delivered one synthetic message to the Proton desktop app; replaying its request returned the same attempt and message IDs. All temporary tokens were revoked. The final automated run passed 440 tests across 33 files.
 
 ## Initial host upgrade
 
@@ -82,3 +82,9 @@ The recipient-side outgoing check found a second defect: a 512 KiB binary file a
 - Nine public routes returned HTTP 200. All 38 monitored host source/public files remain byte-identical. Existing bindings, public content/design, mail routing, and DNS are preserved.
 
 The code is on `feature/emdash-038-reliability`; this is a deployed development build, not a published npm/GitHub release. Host integration changes remain separate from its pre-existing content/design changes. Next priorities are signatures and reversible mailbox actions, followed by bundle classification. See [durable-send limits](durable-send-recovery.md#operational-limits): provider acceptance before receipt persistence still requires operator review.
+
+## PR review regressions
+
+Final review found and fixed two additional issues. Thread actions now refresh messages without unmounting an open reply, preserving unsaved edits and delivery retry state; refresh/action errors display inline. Mutations of historical messages now derive their ancestry before marking them migrated, so snooze wake and pin actions during an unfinished backfill preserve conversation membership.
+
+Six DOM regression cases and two native SQLite cases failed before these fixes and passed afterward. The full run passed **440 tests / 33 files**, TypeScript checks, and native package validation. The 08:53 deployment evidence above predates these two fixes.

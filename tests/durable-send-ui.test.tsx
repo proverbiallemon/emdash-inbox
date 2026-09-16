@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ComposeView } from "../src/components/ComposeView";
 import { ReplyCompose } from "../src/components/ReplyCompose";
+import { ThreadView } from "../src/components/ThreadView";
 import { pages } from "../src/admin";
 
 vi.mock("../src/components/TipTapEditor", () => ({
@@ -53,6 +54,77 @@ it("does not call a reply sent callback for an uncertain result", async () => {
 	await click("Send");
 	expect(sent).not.toHaveBeenCalled(); expect(button("Send").disabled).toBe(true);
 	expect(container.querySelector('a[href*="status=outbox"]')).not.toBeNull();
+});
+
+function threadResponse(pinned = false, status = "inbox") {
+	return response({ items: [{ id: "parent-row", data: {
+		messageId: "parent", threadId: "thread", direction: "inbound", from: "reader@example.com", to: "owner@example.com",
+		subject: "Hello", bodyText: "Original message", bodyHtml: null, receivedAt: "2026-09-16T00:00:00Z", pinned, status, snoozeUntil: null,
+	} }] });
+}
+function subjectInput() { return [...container.querySelectorAll("label")].find(node => node.textContent?.trim() === "Subject")?.querySelector("input"); }
+
+it.each(["📌 Pin thread", "✓ Mark done"])("preserves an unsaved reply while %s refreshes the thread", async (action) => {
+	let finish!: (value: Response) => void;
+	const refresh = new Promise<Response>(resolve => { finish = resolve; });
+	let reads = 0;
+	vi.stubGlobal("fetch", async (path: string) => {
+		if (path.endsWith("threads/action")) return response({ updated: 1 });
+		if (path.endsWith("messages/thread")) return ++reads === 1 ? threadResponse() : refresh;
+		throw new Error(`Unexpected request: ${path}`);
+	});
+	await render(<ThreadView messageId="parent-row" debug={false} onBack={() => {}} />);
+	await click("↩ Reply"); await fill("Subject", "Unsaved reply edits");
+	const originalInput = subjectInput();
+	await click(action);
+	expect(subjectInput()?.value).toBe("Unsaved reply edits");
+	await React.act(async () => { finish(threadResponse(action === "📌 Pin thread", action === "✓ Mark done" ? "done" : "inbox")); });
+	expect(subjectInput()).toBe(originalInput);
+	expect(subjectInput()?.value).toBe("Unsaved reply edits");
+	expect(button(action === "📌 Pin thread" ? "📌 Unpin thread" : "↩ Move to inbox").disabled).toBe(false);
+});
+
+it.each(["action", "refresh"])("preserves an unsaved reply and displays a thread %s error inline", async (failure) => {
+	let reads = 0;
+	const rejected = () => new Response(JSON.stringify({ error: { message: "Thread update interrupted" } }), { status: 503 });
+	vi.stubGlobal("fetch", async (path: string) => {
+		if (path.endsWith("threads/action")) return failure === "action" ? rejected() : response({ updated: 1 });
+		if (path.endsWith("messages/thread")) return ++reads === 1 ? threadResponse() : rejected();
+		throw new Error(`Unexpected request: ${path}`);
+	});
+	await render(<ThreadView messageId="parent-row" debug={false} onBack={() => {}} />);
+	await click("↩ Reply"); await fill("Subject", "Unsaved reply edits"); await click("📌 Pin thread");
+	expect(subjectInput()?.value).toBe("Unsaved reply edits");
+	expect(container.querySelector('[role="alert"]')?.textContent).toContain("Thread update interrupted");
+	expect(button("Send").disabled).toBe(false);
+});
+
+it.each(["uncertain", "unconfirmed"])("preserves the %s reply delivery lock through a thread action", async (deliveryStatus) => {
+	const requests: string[] = [];
+	let finish!: (value: Response) => void;
+	const refresh = new Promise<Response>(resolve => { finish = resolve; });
+	let reads = 0;
+	vi.stubGlobal("fetch", async (path: string, init: RequestInit) => {
+		if (path.endsWith("threads/action")) return response({ updated: 1 });
+		if (path.endsWith("messages/thread")) return ++reads === 1 ? threadResponse() : refresh;
+		if (path.endsWith("messages/reply")) {
+			requests.push(init.body as string);
+			if (deliveryStatus === "unconfirmed" && requests.length === 1) throw new TypeError("Response lost");
+			return response({ id: null, threadId: null, attemptId: "reply-attempt", deliveryStatus: "uncertain" });
+		}
+		throw new Error(`Unexpected request: ${path}`);
+	});
+	await render(<ThreadView messageId="parent-row" debug={false} onBack={() => {}} />);
+	await click("↩ Reply"); await fill("Subject", "Original delivery"); await click("Send"); await click("📌 Pin thread");
+	await React.act(async () => { finish(threadResponse(true)); });
+	expect(button("Send").disabled).toBe(true);
+	expect(subjectInput()?.value).toBe("Original delivery");
+	await click("Send"); expect(requests).toHaveLength(1);
+	if (deliveryStatus === "unconfirmed") {
+		await click("Retry original request");
+		expect(requests).toHaveLength(2); expect(requests[1]).toBe(requests[0]);
+	}
+	expect(container.textContent).toContain("reply-attempt");
 });
 
 it.each([["compose", "network"], ["draft", "server"], ["reply", "malformed"]] as const)("retries the original %s request after a %s failure without changing its key", async (mode, failure) => {

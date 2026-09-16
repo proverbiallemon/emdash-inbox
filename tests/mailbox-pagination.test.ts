@@ -188,6 +188,24 @@ describe("complete mailbox operations against EmDash SQLite", () => {
 		expect(await host.messages.get("d79")).toMatchObject({ status: "draft", threadId: null });
 	});
 
+	it.each(["wake", "pin"])("preserves historical reply ancestry when %s runs before backfill reaches the row", async (operation) => {
+		await host.messages.put("parent", message(0, { threadId: null, messageId: "<parent@example.com>" }));
+		for (let i = 1; i <= 60; i++) await host.messages.put(`d${i}`, message(i, { status: "draft", threadId: null }));
+		await host.messages.put("child", message(61, {
+			threadId: null, messageId: "<child@example.com>",
+			bodyRaw: "In-Reply-To: <parent@example.com>\r\n\r\nReply",
+			status: operation === "wake" ? "snoozed" : "inbox", snoozeUntil: operation === "wake" ? "2026-01-02T00:00:00.000Z" : null,
+		}));
+		expect(await ensureMailboxIndex(ctx)).toEqual({ complete: false });
+		expect(await host.messages.get("child")).toMatchObject({ threadId: null });
+		if (operation === "wake") expect(await wakeSnoozed(ctx, "2026-02-01T00:00:00.000Z")).toBe(1);
+		else await mutateMessage(ctx, "child", () => ({ pinned: true }));
+		const page = await readyPage();
+		expect(page.items).toHaveLength(1);
+		expect(page.items[0]).toMatchObject({ threadId: "<parent@example.com>", messageCount: 2, pinned: operation === "pin" });
+		expect(await host.messages.get("child")).toMatchObject({ threadId: "<parent@example.com>", inReplyTo: "<parent@example.com>", status: "inbox" });
+	});
+
 	it("retries a stale projection scan after another worker publishes a newer source revision", async () => {
 		await putMessage(ctx, "m0", message(0));
 		await readyPage();

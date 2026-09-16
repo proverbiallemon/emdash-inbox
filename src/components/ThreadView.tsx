@@ -45,8 +45,10 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	// "reply-all" additionally prefills cc via deriveReplyAll.
 	const [replyMode, setReplyMode] = React.useState<"reply" | "reply-all" | null>(null);
 
-	const loadThread = React.useCallback(async () => {
-		setLoading(true);
+	const loadThread = React.useCallback(async (refresh = false) => {
+		// Keep an open reply (including its delivery lock) mounted while
+		// refreshing the authoritative rows after a thread action.
+		if (!refresh) setLoading(true);
 		setError(null);
 		try {
 			const res = await apiFetch(`${API}/messages/thread`, {
@@ -77,7 +79,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 			const threadId = thread[0].data.threadId ?? thread[0].data.messageId;
 			const res = await apiFetch(`${API}/threads/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId, ...action }) });
 			await parseApiResponse(res, "Failed to update thread");
-			await loadThread();
+			await loadThread(true);
 		} catch (err) { setError(err instanceof Error ? err.message : String(err)); }
 		finally { setBusy(false); }
 	};
@@ -98,7 +100,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	};
 
 	if (loading) return <div className="p-6 text-muted-foreground">Loading thread…</div>;
-	if (error) return (
+	if (error && thread.length === 0) return (
 		<div className="space-y-3">
 			<button type="button" onClick={onBack} className="text-sm underline hover:no-underline">
 				← Inbox
@@ -172,6 +174,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 			<button type="button" onClick={onBack} className="text-sm underline hover:no-underline">
 				← Inbox
 			</button>
+			{error && <div role="alert" className="p-3 rounded-lg border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>}
 			<ThreadHeader subject={subject} participants={participants} messageCount={thread.length}>
 				<ThreadActions
 					thread={thread}

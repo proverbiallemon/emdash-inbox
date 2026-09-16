@@ -120,9 +120,14 @@ export async function mutateMessage(ctx: any, id: string, patch: MessagePatch): 
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
 		const snapshot = await ctx.storage.messages.getVersioned(id);
 		if (!snapshot || (snapshot.value.status === "draft" || snapshot.value.status === "outbox")) return null;
-		const changes = patch(snapshot.value);
+		// Cron and legacy single-message actions can reach a row before the
+		// backfill does. Resolve its ancestry before marking it fully migrated.
+		const current = snapshot.value.indexSchemaVersion === INDEX_VERSION
+			? snapshot.value
+			: { ...snapshot.value, ...await legacyThread(ctx, snapshot.value) };
+		const changes = patch(current);
 		if (changes === null) return null;
-		const next = prepareMessage(id, { ...snapshot.value, ...changes }, snapshot.value);
+		const next = prepareMessage(id, { ...current, ...changes }, snapshot.value);
 		if ((next.status === "draft" || next.status === "outbox")) throw new Error("Thread operations cannot turn a message into a draft");
 		const result = await ctx.storage.messages.compareAndSet(id, snapshot.revision, next);
 		if (result.applied) return next;
