@@ -42,7 +42,8 @@ describe('M8b native routes',()=>{
   const attachment=(uploaded.data as any).attachment;
   const sent=await host.request('messages/draft-send',{draftId});
   expect(sent.success,JSON.stringify(sent)).toBe(true);
-  expect(await host.messages.get(draftId)).toBeNull();
+  expect((sent.data as any).id).toBe(draftId);
+  expect(await host.messages.get(draftId)).toMatchObject({status:'done',deliveryProjected:true});
   const deliveredFile=cloud.send.mock.calls[0][0].attachments[0];
   expect(deliveredFile).toMatchObject({filename:'hello.txt',type:'text/plain'});
   expect(deliveredFile.content).toBeInstanceOf(ArrayBuffer);

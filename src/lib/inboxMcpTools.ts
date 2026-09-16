@@ -29,7 +29,10 @@ export type InboxToolName =
 	| "discard_draft"
 	| "add_draft_attachment"
 	| "remove_draft_attachment"
-	| "read_attachment";
+	| "read_attachment"
+	| "list_deliveries"
+	| "reconcile_deliveries"
+	| "resolve_delivery";
 
 export interface InboxToolDef<TInput extends z.ZodType = z.ZodType> {
 	name: InboxToolName;
@@ -78,7 +81,10 @@ const recipientField = z
 	.union([z.string(), z.array(z.string())])
 	.describe("One address, a comma-separated list, or an array of addresses.");
 
+const requestIdField = z.string().min(1).max(200).optional().describe("Unique stable key for this send. Reuse with identical input to inspect/retry the original request without sending twice; use a new key only for an intentional new attempt.");
+
 const composeEmailInput = z.object({
+	requestId: requestIdField,
 	to: recipientField,
 	cc: recipientField.optional(),
 	bcc: recipientField.optional(),
@@ -88,6 +94,7 @@ const composeEmailInput = z.object({
 });
 
 const replyToThreadInput = z.object({
+	requestId: requestIdField,
 	threadId: z.string().min(1).describe("Thread to reply to (from list_threads / get_thread)."),
 	text: z.string().min(1).describe("Plain-text reply body."),
 	quoteOriginal: z.boolean().default(true).describe("Quote the original message below your reply. Default true."),
@@ -108,6 +115,7 @@ const saveDraftInput = z.object({
 const listDraftsInput = z.object({});
 
 const sendDraftInput = z.object({
+	requestId: requestIdField,
 	draftId: z.string().min(1).describe("Draft to send (from list_drafts / save_draft)."),
 	edits: z
 		.object({
@@ -125,8 +133,18 @@ const discardDraftInput = z.object({
 	draftId: z.string().min(1).describe("Draft to delete permanently."),
 });
 
+export const listDeliveriesInput = z.object({ limit: z.number().int().positive().max(100).optional(), cursor: z.string().min(1).max(4096).optional() });
+export const resolveDeliveryInput = z.object({
+	attemptId: z.string().min(1).max(256), resolution: z.enum(["sent", "restore"]),
+	confirmDuplicateRisk: z.literal(true).optional().describe("Required to restore an uncertain send. Verify delivery first: resending may create a duplicate."),
+	providerMessageId: z.string().min(1).max(998).optional().describe("Actual provider Message-ID when confirming delivery; do not invent one."),
+});
+
 export function listInboxTools(): InboxToolDef[] {
 	return [
+		{ name: "list_deliveries", description: "Review durable send attempts and uncertain deliveries. Returns a bounded page of summaries without mail bodies or private file keys. Follow cursor while hasMore is true.", inputSchema: listDeliveriesInput },
+		{ name: "reconcile_deliveries", description: "Recover accepted mail into Sent and classify interrupted sends. Never contacts mail transport or resends a message. Run again to advance bounded recovery.", inputSchema: z.object({}) },
+		{ name: "resolve_delivery", description: "Resolve an uncertain delivery after operator verification: mark sent or restore an editable draft with explicit duplicate-risk acknowledgement. Neither action sends mail. Ask the operator which resolution is correct.", inputSchema: resolveDeliveryInput },
 		{ name: "add_draft_attachment", description: "Attach a file to a saved draft. Provide canonical base64 bytes; at most 3 MiB combined across 32 attachments. Returns metadata without private storage keys.", inputSchema: z.object({ draftId: z.string().min(1), filename: z.string().min(1).max(1000), mimeType: z.string().max(127).optional(), contentBase64: z.string().max(4 * 1024 * 1024) }) },
 		{ name: "remove_draft_attachment", description: "Remove one attachment belonging to a saved draft.", inputSchema: z.object({ draftId: z.string().min(1), attachmentId: z.string().min(1) }) },
 		{ name: "read_attachment", description: "Read a file belonging to a message or draft in base64 chunks of up to 256 KiB. Continue at nextOffset until done. Requires both the storage message ID and its attachment ID.", inputSchema: z.object({ messageId: z.string().min(1), attachmentId: z.string().min(1), offset: z.number().int().nonnegative().optional(), limit: z.number().int().positive().max(256 * 1024).optional() }) },
@@ -175,7 +193,7 @@ export function listInboxTools(): InboxToolDef[] {
 		{
 			name: "compose_email",
 			description:
-				"Send a brand-new email (starts a new thread). Requires to, subject, text. Returns the new message and thread IDs.",
+				"Send a brand-new email (starts a new thread). Requires to, subject, text. Returns deliveryStatus and attemptId plus message/thread IDs when sent. Pending or uncertain is not proof of delivery; review Outbox and never automatically resend.",
 			inputSchema: composeEmailInput,
 		},
 		{
@@ -204,7 +222,7 @@ export function listInboxTools(): InboxToolDef[] {
 		{
 			name: "send_draft",
 			description:
-				"Send a saved draft, optionally applying last-minute edits. The draft is deleted on success; on delivery failure it is preserved unchanged.",
+				"Send a saved draft, optionally applying last-minute edits. The draft stays durably locked during delivery. A definitive rejection restores it with edits; an unknown outcome needs Outbox review. Inspect deliveryStatus; never retry an uncertain send using a new requestId.",
 			inputSchema: sendDraftInput,
 		},
 		{

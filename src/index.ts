@@ -17,11 +17,14 @@ import {
 	type ComposeInput,
 	type ReplyInput,
 	type DraftInput,
+	type Deliver,
 } from "./lib/composeOps";
+import { runDelivery, findDeliveryRequest, projectDeliveryMessage, listDeliveries, reconcileDeliveries, resolveDelivery, deliveryCollections, deliveryMessageIndexes, DeliveryError, type DeliveryAttempt, type DeliveryResult } from "./lib/deliveryJournal";
 import { draftSummaryOf } from "./lib/draftSummary";
 import { normalizeRecipients } from "./lib/recipients";
 import { extractAddresses } from "./lib/inboundAddresses";
 import { nativeInboxMcp } from "./lib/nativeMcp";
+import { listDeliveriesInput, resolveDeliveryInput } from "./lib/inboxMcpTools";
 import { normalizeMessageId, replyReferences } from "./lib/messageIdentity";
 import { VERSION } from "./version";
 import { requireMailboxReady, MailboxInputError, mailboxCollections, mailboxMessageIndexes, allRows, loadThreadRows, putMessage, mutateMessage, mutateThread, ensureMailboxIndex, listThreadPage, wakeSnoozed } from "./lib/mailboxStore";
@@ -69,9 +72,13 @@ const SETTINGS = {
  *     straight `get(id)` → mutate → `put(id)` with no hashing indirection.
  */
 export type MessageDirection = "inbound" | "outbound";
-export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft";
+export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft" | "outbox";
 
 export interface MessageDoc {
+	deliveryAttemptId?: string;
+	deliveryFingerprint?: string;
+	deliveryCreatedAt?: string;
+	deliveryProjected?: boolean;
 	attachments?: StoredAttachment[];
 	rawObjectKey?: string;
 	indexDirty?: boolean;
@@ -138,105 +145,31 @@ export interface ContactDoc {
 	outboundCount: number;
 }
 
-async function persistOutbound(
-	ctx: any,
-	event: {
-		message: {
-			to: string;
-			toAll?: string[];
-			cc?: string[];
-			bcc?: string[];
-			subject: string;
-			text: string;
-			html?: string;
-			inReplyTo?: string;
-			attachments?: StoredAttachment[];
-		};
-		source: string;
-	},
-	senderAddress: string,
-	deliveredMessageId: string | undefined,
-	references: string[],
-): Promise<{ id: string; threadId: string }> {
-	const now = new Date().toISOString();
-	const msgId = crypto.randomUUID();
-	const messageId = normalizeMessageId(deliveredMessageId) ?? `<${msgId}@emdash-inbox.local>`;
-	if (!normalizeMessageId(deliveredMessageId)) {
-		// Delivery already succeeded. Preserve the sent row without inviting a
-		// retry, but do not misrepresent a guessed domain as the delivered ID.
-		ctx.log.warn("emdash-inbox: transport did not return a complete Message-ID; reply correlation is unavailable");
+/** Project an accepted receipt into the same durable row; recovery never sends. */
+async function projectSent(ctx: any, attempt: DeliveryAttempt): Promise<{ id: string; threadId: string }> {
+	const deliveredMessageId = attempt.receipt?.messageId;
+	const messageId = normalizeMessageId(deliveredMessageId) ?? `<sent-${attempt.messageId}@local>`;
+	const snapshot = attempt.snapshot;
+	return projectDeliveryMessage(ctx, attempt, {
+		...snapshot,
+		messageId, transportMessageId: deliveredMessageId,
+		threadId: snapshot.inReplyTo ? snapshot.threadId ?? snapshot.inReplyTo : messageId,
+		status: "done", read: true,
+	});
+}
+
+/** Contact statistics are best effort; a mail receipt never depends on them. */
+async function recordOutboundContact(ctx: any, email: string, at: string): Promise<void> {
+	const id = email.trim().toLowerCase();
+	for (let retry = 0; retry < 5; retry++) {
+		const current = await ctx.storage.contacts.getVersioned(id);
+		const prior = current?.value as ContactDoc | undefined;
+		const next: ContactDoc = prior ? {
+			...prior, lastContactAt: prior.lastContactAt > at ? prior.lastContactAt : at,
+			messageCount: prior.messageCount + 1, outboundCount: prior.outboundCount + 1,
+		} : { email, name: null, firstSeenAt: at, lastContactAt: at, messageCount: 1, inboundCount: 0, outboundCount: 1 };
+		if ((await ctx.storage.contacts.compareAndSet(id, current?.revision ?? null, next)).applied) return;
 	}
-
-	// Derive threadId from inReplyTo (if caller provided).
-	const inReplyToHeader = event.message.inReplyTo ?? null;
-	let derivedThreadId = messageId;
-	let derivedInReplyTo: string | null = null;
-	if (inReplyToHeader) {
-		const hit = await (ctx.storage as any).messages.query({
-			where: { messageId: inReplyToHeader },
-			limit: 1,
-		});
-		const parent = hit.items?.[0];
-		const lookup = (id: string) =>
-			parent && parent.data.messageId === id
-				? { messageId: parent.data.messageId, threadId: parent.data.threadId ?? null }
-				: null;
-		const derived = deriveThreadInfo(messageId, inReplyToHeader, [], lookup);
-		derivedThreadId = derived.threadId;
-		derivedInReplyTo = derived.inReplyTo;
-	}
-
-	const msg: MessageDoc = {
-		messageId,
-		transportMessageId: deliveredMessageId,
-		references,
-		direction: "outbound",
-		from: senderAddress,
-		to: event.message.to,
-		toAll: event.message.toAll ?? [event.message.to],
-		cc: event.message.cc ?? [],
-		bcc: event.message.bcc ?? [],
-		subject: event.message.subject,
-		bodyText: event.message.text,
-		bodyHtml: event.message.html ?? null,
-		bodyRaw: null,
-		attachments: event.message.attachments ?? [],
-		threadId: derivedThreadId,
-		receivedAt: now,
-		source: event.source,
-		status: "done",
-		pinned: false,
-		read: true,   // outbound: we sent it, nothing to read
-		bundleId: null,
-		sortAt: now,
-		snoozeUntil: null,
-		inReplyTo: derivedInReplyTo,
-	};
-	await putMessage(ctx, msgId, msg);
-
-	const contactId = event.message.to.trim().toLowerCase();
-	const existing = (await ctx.storage.contacts.get(contactId)) as
-		| ContactDoc
-		| null;
-	const contact: ContactDoc = existing
-		? {
-				...existing,
-				lastContactAt: now,
-				messageCount: existing.messageCount + 1,
-				outboundCount: existing.outboundCount + 1,
-			}
-		: {
-				email: event.message.to,
-				name: null,
-				firstSeenAt: now,
-				lastContactAt: now,
-				messageCount: 1,
-				inboundCount: 0,
-				outboundCount: 1,
-			};
-	await ctx.storage.contacts.put(contactId, contact);
-
-	return { id: msgId, threadId: derivedThreadId };
 }
 
 /** Advance bounded mailbox migration/repair; route callers can retry indexing. */
@@ -403,7 +336,8 @@ async function persistInbound(
  *
  * Persistence runs inline (not via `email:afterSend`) — emdash doesn't await
  * afterSend on Workers, so DB writes there hang as the request context tears
- * down. Wrapped so persistence never masks a successful delivery.
+ * down. The durable journal records acceptance before mailbox projection;
+ * recovery never invokes transport.
  *
  * Note: route callers bypass `email:intercept` hooks entirely (no
  * `beforeSend` / `afterSend` fires for route-initiated sends). Acceptable
@@ -412,21 +346,12 @@ async function persistInbound(
  */
 async function deliverEmail(
 	ctx: any,
-	event: {
-		message: {
-			to: string;
-			toAll?: string[];
-			cc?: string[];
-			bcc?: string[];
-			subject: string;
-			text: string;
-			html?: string;
-			inReplyTo?: string;
-			attachments?: StoredAttachment[];
-		};
-		source: string;
-	},
-): Promise<{ id: string; threadId: string } | null> {
+	event: Parameters<Deliver>[1],
+): Promise<DeliveryResult> {
+	if (event.requestId) {
+		const previous = await findDeliveryRequest(ctx, event.requestId, event.requestPayload ?? event.message);
+		if (previous) return previous;
+	}
 	const kv = ctx.kv as { get<T>(key: string): Promise<T | null> };
 	const senderAddress = await kv.get<string>(SETTINGS.senderAddress);
 
@@ -479,35 +404,42 @@ async function deliverEmail(
 		};
 	}
 
-	let result: Awaited<ReturnType<EmailBinding["send"]>>;
-	try {
-		result = await binding.send(payload);
-	} catch (err) {
-		const wrapped = wrapBindingError(err);
-		ctx.log.error("emdash-inbox: CF Email binding rejected send", {
-			error: wrapped.message,
-			to: event.message.to,
-			source: event.source,
-		});
-		throw wrapped;
-	}
-
-	ctx.log.info("emdash-inbox: delivered", {
-		to: event.message.to,
-		subject: event.message.subject,
-		source: event.source,
-		messageId: result.messageId,
+	const now = new Date().toISOString();
+	const parentRows = parentId ? await ctx.storage.messages.query({ where: { messageId: parentId }, limit: 1 }) : null;
+	const parent = parentRows?.items?.[0]?.data as MessageDoc | undefined;
+	const snapshot: MessageDoc = {
+		...(event.draftClaim?.snapshot ?? {}),
+		messageId: event.draftClaim?.snapshot.messageId ?? `<outbox-${crypto.randomUUID()}@local>`,
+		direction: "outbound", from: senderAddress,
+		to: event.message.to, toAll: event.message.toAll ?? [event.message.to],
+		cc: event.message.cc ?? [], bcc: event.message.bcc ?? [],
+		subject: event.message.subject, bodyText: event.message.text, bodyHtml: event.message.html ?? null,
+		bodyRaw: null, attachments: event.message.attachments ?? [], references,
+		inReplyTo: parentId, threadId: parentId ? parent?.threadId ?? parentId : null,
+		receivedAt: now, sortAt: now, source: event.source, status: "outbox",
+		pinned: false, read: true, bundleId: null, snoozeUntil: null,
+	};
+	let acceptedByTransport = false;
+	const delivery = await runDelivery(ctx, {
+		snapshot, messageId: event.draftClaim?.id, expectedRevision: event.draftClaim?.revision,
+		requestId: event.requestId, requestPayload: event.requestPayload ?? event.message,
+	}, {
+		transport: async () => {
+			try {
+				const receipt = await binding.send(payload);
+				acceptedByTransport = true;
+				return receipt;
+			}
+			catch (error) { throw wrapBindingError(error); }
+		},
+		projectSent,
 	});
-
-	try {
-		return await persistOutbound(ctx, event, senderAddress, result.messageId, references);
-	} catch (err) {
-		ctx.log.error("emdash-inbox: failed to persist outbound", {
-			to: event.message.to,
-			error: err instanceof Error ? err.message : String(err),
-		});
-		return null;
+	// Reconciliation/replayed requests do not increment contact counts again.
+	if (acceptedByTransport) {
+		try { await recordOutboundContact(ctx, event.message.to, now); }
+		catch { ctx.log.warn("emdash-inbox: contact statistics update interrupted"); }
 	}
+	return delivery;
 }
 
 /**
@@ -524,6 +456,7 @@ function mapComposeError(err: unknown): never {
 	}
 	if (err instanceof NotFoundError) throw PluginRouteError.notFound(err.message);
 	if (err instanceof ComposeError) throw PluginRouteError.badRequest(err.message);
+	if (err instanceof DeliveryError) throw PluginRouteError.badRequest(err.message);
 	if (err instanceof DeliverError) throw PluginRouteError.badRequest(err.message);
 	const msg = err instanceof Error ? err.message : String(err);
 	throw PluginRouteError.internal(`send failed: ${msg}`);
@@ -534,7 +467,7 @@ async function requireMailboxRouteReady(ctx: any): Promise<void> {
 }
 
 function statusPatch(doc: MessageDoc, status: "inbox" | "done" | "snoozed", snoozeUntil?: string): Partial<MessageDoc> {
-	if (doc.status === "draft") throw PluginRouteError.badRequest("Drafts cannot change mailbox status");
+	if (doc.status === "draft" || doc.status === "outbox") throw PluginRouteError.badRequest("Drafts cannot change mailbox status");
 	if (status === "snoozed" && (typeof snoozeUntil !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(snoozeUntil) || !Number.isFinite(Date.parse(snoozeUntil)))) throw PluginRouteError.badRequest("snoozeUntil must be an ISO date string");
 	const check = validateTransition(doc.status, status, snoozeUntil);
 	if (!check.ok) throw PluginRouteError.badRequest(check.error);
@@ -557,7 +490,7 @@ function statusPatch(doc: MessageDoc, status: "inbox" | "done" | "snoozed", snoo
  * auth implicitly via the Worker's CF account.
  */
 export function createPlugin() {
-	const native = nativeInboxMcp(deliverEmail, ensureMigrations, mapComposeError);
+	const native = nativeInboxMcp(deliverEmail, ensureMigrations, mapComposeError, projectSent);
 	return definePlugin({
 		id: "emdash-inbox",
 		version: VERSION,
@@ -575,9 +508,11 @@ export function createPlugin() {
 		storage: {
 			...mailboxCollections,
 			...attachmentCollections,
+			...deliveryCollections,
 			messages: {
 				indexes: [
 					...mailboxMessageIndexes,
+					...deliveryMessageIndexes,
 					"receivedAt",
 					"sortAt",
 					"snoozeUntil",
@@ -612,6 +547,7 @@ export function createPlugin() {
 				const woken = await wakeSnoozed(ctx, now);
 				await ensureMailboxIndex(ctx);
 				await retryAttachmentCleanup(ctx);
+				await reconcileDeliveries(ctx, projectSent);
 
 				if (woken > 0) {
 					ctx.log.info("emdash-inbox: woke snoozed messages", { woken });
@@ -621,7 +557,12 @@ export function createPlugin() {
 			"email:deliver": {
 				exclusive: true,
 				handler: async (event, ctx) => {
-					await deliverEmail(ctx, event);
+					const delivery = await deliverEmail(ctx, event);
+					if (delivery.deliveryStatus !== "sent" && !delivery.providerAccepted) {
+						throw new DeliverError(delivery.deliveryStatus === "failed"
+							? `Email was rejected; review its saved draft (${delivery.attemptId}).`
+							: `Email delivery needs Outbox review before retrying (${delivery.attemptId}).`);
+					}
 				},
 			},
 
@@ -752,7 +693,7 @@ export function createPlugin() {
 					await requireMailboxRouteReady(routeCtx);
 
 					const input = routeCtx.input as
-						| { inReplyTo?: unknown; to?: unknown; cc?: unknown; subject?: unknown; text?: unknown; html?: unknown }
+						| { requestId?: string; inReplyTo?: unknown; to?: unknown; cc?: unknown; subject?: unknown; text?: unknown; html?: unknown }
 						| null;
 
 					const inReplyTo = typeof input?.inReplyTo === "string" ? input.inReplyTo.trim() : "";
@@ -804,7 +745,9 @@ export function createPlugin() {
 					// HTML to a known element set. Tracked in deferred list.
 
 					try {
-						await deliverEmail(routeCtx, {
+						return await deliverEmail(routeCtx, {
+							requestId: input?.requestId,
+							requestPayload: { operation: "reply-message", ...input, requestId: undefined },
 							message: {
 								to: toList[0],
 								toAll: toList,
@@ -836,6 +779,28 @@ export function createPlugin() {
 				},
 			},
 
+			"deliveries/list": {
+				permission: "plugins:manage", input: listDeliveriesInput,
+				handler: async (ctx) => {
+					try { await reconcileDeliveries(ctx, projectSent); return await listDeliveries(ctx, listDeliveriesInput.parse(ctx.input)); }
+					catch (error) { return mapComposeError(error); }
+				},
+			},
+			"deliveries/reconcile": {
+				permission: "plugins:manage",
+				handler: async (ctx) => {
+					try { return await reconcileDeliveries(ctx, projectSent); }
+					catch (error) { return mapComposeError(error); }
+				},
+			},
+			"deliveries/resolve": {
+				permission: "plugins:manage", input: resolveDeliveryInput,
+				handler: async (ctx) => {
+					try { return await resolveDelivery(ctx, projectSent, resolveDeliveryInput.parse(ctx.input)); }
+					catch (error) { return mapComposeError(error); }
+				},
+			},
+
 			"messages/reply-all": {
 				handler: async (routeCtx) => {
 					await requireMailboxRouteReady(routeCtx);
@@ -864,12 +829,12 @@ export function createPlugin() {
 			"messages/draft-send": {
 				handler: async (routeCtx) => {
 					await ensureMigrations(routeCtx);
-					const input = (routeCtx.input ?? {}) as { draftId?: string; edits?: Partial<ComposeInput> };
+					const input = (routeCtx.input ?? {}) as { draftId?: string; edits?: Partial<ComposeInput>; requestId?: string };
 					if (typeof input.draftId !== "string" || input.draftId === "") {
 						throw PluginRouteError.badRequest("draftId: required non-empty string");
 					}
 					try {
-						return await draftSend(routeCtx, deliverEmail, { draftId: input.draftId, edits: input.edits });
+						return await draftSend(routeCtx, deliverEmail, { draftId: input.draftId, edits: input.edits, requestId: input.requestId });
 					} catch (err) {
 						mapComposeError(err);
 					}
@@ -916,7 +881,7 @@ export function createPlugin() {
 				handler: async (routeCtx) => {
 					if ((routeCtx.input as {method?: string})?.method === "tools/call") await ensureMigrations(routeCtx);
 					const { dispatchMcpRequest } = await import("./lib/inboxMcpHandlers");
-					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {}, deliverEmail);
+					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {}, deliverEmail, projectSent);
 				},
 			},
 

@@ -16,9 +16,10 @@ export function publicAttachment(attachment: StoredAttachment): PublicAttachment
 	return { id, filename, mimeType, size, sha256, disposition, ...(contentId ? { contentId } : {}) };
 }
 
-type InternalMessageFields = "bodyRaw" | "rawObjectKey" | "objectKey" | "attachments" | "indexDirty" | "indexPreviousThreadIds" | "indexSchemaVersion" | "messageKey";
+type InternalMessageFields = "deliveryProjected" | "deliveryAttemptId" | "deliveryFingerprint" | "deliveryCreatedAt" | "bodyRaw" | "rawObjectKey" | "objectKey" | "attachments" | "indexDirty" | "indexPreviousThreadIds" | "indexSchemaVersion" | "messageKey";
 export function publicMessage<T extends object>(doc: T): Omit<T, InternalMessageFields> & { attachments?: PublicAttachment[] } {
 	const {
+		deliveryProjected: _projected, deliveryAttemptId: _attempt, deliveryFingerprint: _fingerprint, deliveryCreatedAt: _deliveryCreatedAt,
 		bodyRaw: _raw, rawObjectKey: _rawKey, objectKey: _key, attachments,
 		indexDirty: _dirty, indexPreviousThreadIds: _previous, indexSchemaVersion: _schema, messageKey: _messageKey,
 		...rest

@@ -36,7 +36,7 @@ interface MessageRow {
  * `snooze_thread`/`mark_done` handlers.
  */
 export function isDraftRow(row: { data: { status: string } }): boolean {
-	return row.data.status === "draft";
+	return row.data.status === "draft" || row.data.status === "outbox";
 }
 
 /**

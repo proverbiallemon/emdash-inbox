@@ -39,6 +39,23 @@ describe("draft operations with EmDash SQLite storage", () => {
 		return (saved.data as { draftId: string }).draftId;
 	}
 
+	function pauseNextDraftRead(draftId: string) {
+		const reached = deferred<void>();
+		const release = deferred<void>();
+		const read = PluginStorageRepository.prototype.getVersioned;
+		let paused = false;
+		vi.spyOn(PluginStorageRepository.prototype, "getVersioned").mockImplementation(async function (
+			this: PluginStorageRepository, id: string,
+		) {
+			const current = await read.call(this, id);
+			if (id === draftId && !paused) {
+				paused = true; reached.resolve(); await release.promise;
+			}
+			return current;
+		});
+		return { reached: reached.promise, release: release.resolve };
+	}
+
 	it("saves a new revision and sends text edits with consistent HTML through native MCP", async () => {
 		const draftId = await saveDraft();
 		// Rich HTML is saved by the admin composer; MCP draft saves are text-only.
@@ -58,7 +75,8 @@ describe("draft operations with EmDash SQLite storage", () => {
 		const sent = await host.request("mcp/send_draft", { draftId });
 
 		expect(sent.success, JSON.stringify(sent)).toBe(true);
-		expect(await host.messages.get(draftId)).toBeNull();
+		expect(sent.data).toMatchObject({ id: draftId, deliveryStatus: "sent", attemptId: expect.any(String) });
+		expect(await host.messages.get(draftId)).toMatchObject({ status: "done" });
 		expect(transport.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
 			to: ["reader@example.com"],
 			text: "Updated <body>\nNext line",
@@ -81,7 +99,7 @@ describe("draft operations with EmDash SQLite storage", () => {
 		const finishDelivery = deferred<{ messageId: string }>();
 		const revisions: string[] = [];
 		const getVersioned = PluginStorageRepository.prototype.getVersioned;
-		// Pause only after real SQL reads. Conditional deletion and all writes
+		// Pause only after real SQL reads. Conditional claims and all writes
 		// still run through EmDash's actual repository and SQLite adapter.
 		vi.spyOn(PluginStorageRepository.prototype, "getVersioned").mockImplementation(async function (
 			this: PluginStorageRepository,
@@ -109,7 +127,7 @@ describe("draft operations with EmDash SQLite storage", () => {
 		releaseReads.resolve();
 		await deliveryStarted.promise;
 		try {
-			expect(await host.messages.get(draftId)).toBeNull();
+			expect(await host.messages.get(draftId)).toMatchObject({ status: "outbox", deliveryAttemptId: expect.any(String) });
 		} finally {
 			finishDelivery.resolve({ messageId: "<draft-delivery@cloudflare.example>" });
 		}
@@ -128,7 +146,7 @@ describe("draft operations with EmDash SQLite storage", () => {
 	it("restores the latest send edits as a new SQL revision after delivery rejects", async () => {
 		const draftId = await saveDraft();
 		const original = await host.messages.getVersioned(draftId);
-		transport.send.mockRejectedValueOnce(new Error("Provider rejected delivery"));
+		transport.send.mockRejectedValueOnce(Object.assign(new Error("Provider rejected delivery"), { code: "E_VALIDATION_ERROR" }));
 
 		const failed = await host.request("mcp/send_draft", {
 			draftId,
@@ -141,7 +159,8 @@ describe("draft operations with EmDash SQLite storage", () => {
 			},
 		});
 
-		expect(failed.success).toBe(false);
+		expect(failed.success, JSON.stringify(failed)).toBe(true);
+		expect(failed.data).toMatchObject({ deliveryStatus: "failed", draftId, error: "E_VALIDATION_ERROR" });
 		const restored = await host.messages.getVersioned(draftId);
 		expect(restored?.revision).not.toBe(original?.revision);
 		expect(restored?.value).toMatchObject({
@@ -158,7 +177,8 @@ describe("draft operations with EmDash SQLite storage", () => {
 
 		const retry = await host.request("mcp/send_draft", { draftId });
 		expect(retry.success, JSON.stringify(retry)).toBe(true);
-		expect(await host.messages.get(draftId)).toBeNull();
+		expect(retry.data).toMatchObject({ id: draftId, deliveryStatus: "sent" });
+		expect(await host.messages.get(draftId)).toMatchObject({ status: "done" });
 		expect(transport.send).toHaveBeenLastCalledWith(expect.objectContaining({
 			to: ["new@example.com", "other@example.com"],
 			subject: "Latest subject",
@@ -180,12 +200,42 @@ describe("draft operations with EmDash SQLite storage", () => {
 
 		await deliveryStarted.promise;
 		const replacement = { ...original, subject: "Replacement draft" };
-		const created = await host.messages.compareAndSet(draftId, null, replacement);
+		const claimed = await host.messages.getVersioned(draftId);
+		expect(claimed?.value.status).toBe("outbox");
+		const created = await host.messages.compareAndSet(draftId, claimed!.revision, replacement);
 		expect(created.applied).toBe(true);
-		delivery.reject(new Error("Provider rejected delivery"));
-		expect((await sending).success).toBe(false);
+		delivery.reject(Object.assign(new Error("Provider rejected delivery"), { code: "E_VALIDATION_ERROR" }));
+		const failed = await sending;
+		expect(failed.success).toBe(true);
+		expect(failed.data).toMatchObject({ deliveryStatus: "failed" });
 
 		expect(await host.messages.get(draftId)).toEqual(replacement);
 		expect((await host.messages.query({ where: { status: "done" } })).items).toHaveLength(0);
+	});
+
+	it("does not send a stale revision after a concurrent save", async () => {
+		const draftId = await saveDraft();
+		const paused = pauseNextDraftRead(draftId);
+		const sending = host.request("mcp/send_draft", { draftId });
+		await paused.reached;
+		const saved = await host.request("messages/draft-save", { draftId, text: "Newer draft revision" });
+		expect(saved.success).toBe(true);
+		paused.release();
+		expect((await sending).success).toBe(false);
+		expect(transport.send).not.toHaveBeenCalled();
+		expect(await host.messages.get(draftId)).toMatchObject({ status: "draft", bodyText: "Newer draft revision" });
+	});
+
+	it.each(["messages/draft-save", "messages/draft-discard"])("a stale %s cannot rewrite or remove the sent row", async (route) => {
+		const draftId = await saveDraft();
+		const paused = pauseNextDraftRead(draftId);
+		const stale = host.request(route, { draftId, text: "Stale edit" });
+		await paused.reached;
+		const sent = await host.request("messages/draft-send", { draftId });
+		expect(sent.success).toBe(true);
+		paused.release();
+		expect((await stale).success).toBe(false);
+		expect(transport.send).toHaveBeenCalledOnce();
+		expect(await host.messages.get(draftId)).toMatchObject({ status: "done", bodyText: "Original text" });
 	});
 });

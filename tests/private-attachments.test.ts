@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginStorageRepository } from "emdash";
 import PostalMime from "postal-mime";
 import { createNativeHost } from "./helpers/nativeHost";
-import { draftDiscard, draftSave, draftSend } from "../src/lib/composeOps";
+import { draftDiscard, draftSave } from "../src/lib/composeOps";
 import {
 	decodeBase64, encodeBase64, publicMessage, uploadDraftAttachment, removeDraftAttachment,
 	readAttachment, storeInboundFiles, prepareOutgoingAttachments, retryAttachmentCleanup,
@@ -11,7 +11,8 @@ import {
 } from "../src/lib/attachments";
 
 const objects = vi.hoisted(() => ({ files: new Map<string, Uint8Array>(), failDelete: false, afterPut: undefined as undefined | (() => Promise<void>) }));
-vi.mock("cloudflare:workers", () => ({ env: { INBOX_ATTACHMENTS: {
+const transport = vi.hoisted(() => ({ send: vi.fn() }));
+vi.mock("cloudflare:workers", () => ({ env: { EMAIL: transport, INBOX_ATTACHMENTS: {
 	async put(key: string, bytes: Uint8Array) { objects.files.set(key, new Uint8Array(bytes)); await objects.afterPut?.(); },
 	async get(key: string, options?: { range?: { offset: number; length: number } }) {
 		const bytes = objects.files.get(key); if (!bytes) return null;
@@ -32,6 +33,7 @@ describe("private attachments with native SQLite draft revisions", () => {
 	let ctx: any;
 	beforeEach(async () => {
 		objects.files.clear(); objects.failDelete = false; objects.afterPut = undefined;
+		transport.send.mockReset().mockResolvedValue({ messageId: "<files-sent@example.com>" });
 		host = await createNativeHost();
 		ctx = {
 			storage: { messages: host.messages, attachmentCleanup: new PluginStorageRepository(host.db, "emdash-inbox", "attachmentCleanup", ["createdAt"]) },
@@ -113,8 +115,11 @@ describe("private attachments with native SQLite draft revisions", () => {
 			const result = await read(key); reached.resolve(); await release.promise; return result;
 		});
 		const removing = removeDraftAttachment(ctx, { draftId: id, attachmentId: file.id }).catch((error) => error);
-		await reached.promise; await draftSend(ctx, async () => null, { draftId: id }); release.resolve();
+		await reached.promise;
+		expect((await host.request("messages/draft-send", { draftId: id })).success).toBe(true);
+		release.resolve();
 		expect(await removing).toBeInstanceOf(Error); expect(objects.files.has(file.objectKey)).toBe(true);
+		expect(await host.messages.get(id)).toMatchObject({ status: "done", attachments: [file] });
 	});
 
 	it("requires draft membership for upload and rejects invalid download ranges", async () => {
@@ -127,19 +132,35 @@ describe("private attachments with native SQLite draft revisions", () => {
 
 	it("retains attachment references after rejected delivery and after accepted delivery without sent persistence", async () => {
 		const id = await draft(); await upload(id); const refs = await stored(id);
-		await expect(draftSend(ctx, async () => { throw new Error("transport rejection"); }, { draftId: id })).rejects.toThrow("transport rejection");
+		transport.send.mockRejectedValueOnce(Object.assign(new Error("transport rejection"), { code: "E_VALIDATION_ERROR" }));
+		const rejected = await host.request("messages/draft-send", { draftId: id });
+		expect(rejected.success).toBe(true);
+		expect(rejected.data).toMatchObject({ deliveryStatus: "failed", draftId: id });
 		expect(await stored(id)).toEqual(refs);
-		let sent: unknown;
-		await draftSend(ctx, async (_ctx, event) => { sent = event.message.attachments; return null; }, { draftId: id });
-		expect(sent).toEqual(refs); expect(await host.messages.get(id)).toBeNull();
+		const write = PluginStorageRepository.prototype.compareAndSet;
+		const fault = vi.spyOn(PluginStorageRepository.prototype, "compareAndSet").mockImplementation(async function (
+			this: PluginStorageRepository, ...args: Parameters<typeof write>
+		) {
+			if (args[0] === id && (args[2] as any).status === "done") throw new Error("Sent projection unavailable");
+			return write.apply(this, args);
+		});
+		const accepted = await host.request("messages/draft-send", { draftId: id });
+		expect(accepted.success).toBe(true);
+		expect(accepted.data).toMatchObject({ deliveryStatus: "pending" });
+		expect(await host.messages.get(id)).toMatchObject({ status: "outbox", attachments: refs });
+		expect(new Uint8Array(transport.send.mock.calls[1][0].attachments[0].content)).toEqual(new Uint8Array([0, 255, 1, 2]));
 		expect(objects.files.has(refs[0].objectKey)).toBe(true);
+		fault.mockRestore();
+		expect((await host.request("deliveries/reconcile", {})).success).toBe(true);
+		expect(await host.messages.get(id)).toMatchObject({ status: "done", attachments: refs });
+		expect(transport.send).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not claim or send a draft with missing attachment bytes", async () => {
 		const id = await draft(); await upload(id); objects.files.clear();
-		let delivered = false;
-		await expect(draftSend(ctx, async () => { delivered = true; return null; }, { draftId: id })).rejects.toThrow(/missing|unavailable/i);
-		expect(delivered).toBe(false); expect(await host.messages.get(id)).not.toBeNull();
+		const rejected = await host.request("messages/draft-send", { draftId: id });
+		expect(rejected.success).toBe(false);
+		expect(transport.send).not.toHaveBeenCalled(); expect(await host.messages.get(id)).toMatchObject({ status: "draft" });
 	});
 
 	it("queues failed deletion durably after removing the reference and later retries it", async () => {
@@ -155,10 +176,17 @@ describe("private attachments with native SQLite draft revisions", () => {
 		const first = await draft(); await upload(first); await draftDiscard(ctx, { draftId: first }); expect(objects.files.size).toBe(0);
 		const id = await draft(); await upload(id); const file = (await stored(id))[0];
 		const reached = deferred(); const finish = deferred();
-		const sending = draftSend(ctx, async () => { reached.resolve(); await finish.promise; return null; }, { draftId: id });
+		transport.send.mockImplementationOnce(async () => { reached.resolve(); await finish.promise; return { messageId: "<files-sent@example.com>" }; });
+		const sending = host.request("messages/draft-send", { draftId: id });
 		await reached.promise;
-		await expect(removeDraftAttachment(ctx, { draftId: id, attachmentId: file.id })).rejects.toThrow(/not found/i);
-		expect(objects.files.has(file.objectKey)).toBe(true); finish.resolve(); await sending;
+		try {
+			await expect(removeDraftAttachment(ctx, { draftId: id, attachmentId: file.id })).rejects.toThrow(/not found|draft|send/i);
+			await expect(upload(id)).rejects.toThrow(/not found|draft|send/i);
+			expect(await host.messages.get(id)).toMatchObject({ status: "outbox", attachments: [file] });
+			expect(objects.files.has(file.objectKey)).toBe(true);
+		} finally { finish.resolve(); }
+		expect((await sending).success).toBe(true);
+		expect(await host.messages.get(id)).toMatchObject({ status: "done", attachments: [file] });
 	});
 
 	it("stores parsed inbound bytes and original MIME privately without embedding keys in public messages", async () => {

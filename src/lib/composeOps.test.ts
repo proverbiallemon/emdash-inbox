@@ -164,84 +164,57 @@ describe("draft body consistency", () => {
 	});
 });
 
-describe("draft send claims", () => {
-	it("delivers only once when two sends read the same draft revision", async () => {
-		const { ctx, messages, sent, deliver } = setup();
-		const reads = messages.pauseReads(2);
-		const deliveryStarted = deferred<void>();
-		const finishDelivery = deferred<void>();
-		const heldDelivery: Deliver = async (context, event) => {
-			const result = await deliver(context, event);
-			deliveryStarted.resolve();
-			await finishDelivery.promise;
-			return result;
-		};
-		const outcomes = Promise.allSettled([
-			draftSend(ctx, heldDelivery, { draftId: "d1" }),
-			draftSend(ctx, heldDelivery, { draftId: "d1" }),
-		]);
-
-		await reads.reached;
-		reads.resume();
-		await deliveryStarted.promise;
-		expect(await messages.get("d1")).toBeNull();
-		finishDelivery.resolve();
-		const results = await outcomes;
-
-		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-		expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-		expect(sent).toHaveLength(1);
-		expect(await messages.get("d1")).toBeNull();
-	});
-
-	it("restores the latest send edits after a rejected delivery", async () => {
-		const { ctx, messages } = setup(draftDoc({ threadId: "t1", inReplyTo: "<parent@example.com>" }));
-		const failure = new Error("Delivery rejected");
-		const rejectDelivery: Deliver = async () => { throw failure; };
-
-		await expect(draftSend(ctx, rejectDelivery, {
+describe("draft send handoff", () => {
+	it("passes the exact revision and final snapshot to delivery without removing the draft", async () => {
+		const { ctx, messages, sent, deliver } = setup(draftDoc({ threadId: "t1", inReplyTo: "<parent@example.com>" }));
+		const original = await messages.getVersioned("d1");
+		const outcome = await draftSend(ctx, deliver, {
 			draftId: "d1",
 			edits: {
-				to: "new@example.com, other@example.com",
-				cc: "copy@example.com",
-				bcc: "hidden@example.com",
-				subject: "Updated subject",
-				text: "Latest <text>",
+				to: "new@example.com, other@example.com", cc: "copy@example.com", bcc: "hidden@example.com",
+				subject: "Updated subject", text: "Latest <text>",
 			},
-		})).rejects.toBe(failure);
-
-		expect(await messages.get("d1")).toMatchObject({
-			status: "draft",
-			to: "new@example.com",
-			toAll: ["new@example.com", "other@example.com"],
-			cc: ["copy@example.com"],
-			bcc: ["hidden@example.com"],
-			subject: "Updated subject",
-			bodyText: "Latest <text>",
-			bodyHtml: "<p>Latest &lt;text&gt;</p>",
-			threadId: "t1",
-			inReplyTo: "<parent@example.com>",
 		});
+		expect(outcome).toEqual({ id: "sent-1", threadId: "thread-1" });
+		expect(sent).toHaveLength(1);
+		expect(sent[0].draftClaim).toMatchObject({
+			id: "d1", revision: original!.revision,
+			snapshot: {
+				status: "draft", to: "new@example.com", toAll: ["new@example.com", "other@example.com"],
+				cc: ["copy@example.com"], bcc: ["hidden@example.com"], subject: "Updated subject",
+				bodyText: "Latest <text>", bodyHtml: "<p>Latest &lt;text&gt;</p>",
+				threadId: "t1", inReplyTo: "<parent@example.com>",
+			},
+		});
+		expect(await messages.getVersioned("d1")).toEqual(original);
+		await draftSave(ctx, { draftId: "d1", text: "Later edit" });
+		expect(sent[0].draftClaim!.snapshot.bodyText).toBe("Latest <text>");
+		expect(sent[0].draftClaim!.revision).toBe(original!.revision);
 	});
 
-	it("does not overwrite a replacement draft while restoring a rejected delivery", async () => {
+	it("preserves the delivery result including an uncertain attempt", async () => {
+		const { ctx, messages } = setup();
+		const original = await messages.getVersioned("d1");
+		const uncertain = { id: null, threadId: null, attemptId: "attempt-1", deliveryStatus: "uncertain" as const };
+		expect(await draftSend(ctx, async () => uncertain, { draftId: "d1" })).toEqual(uncertain);
+		expect(await messages.getVersioned("d1")).toEqual(original);
+	});
+
+	it("leaves restoration to delivery and propagates a preflight error without rewriting a concurrent edit", async () => {
 		const { ctx, messages } = setup();
 		const deliveryStarted = deferred<void>();
 		const delivery = deferred<Awaited<ReturnType<Deliver>>>();
-		const rejectDelivery: Deliver = async () => {
+		const failure = new Error("Preflight unavailable");
+		const outcome = expect(draftSend(ctx, async () => {
 			deliveryStarted.resolve();
 			return delivery.promise;
-		};
-		const failure = new Error("Delivery rejected");
-		const outcome = expect(draftSend(ctx, rejectDelivery, { draftId: "d1" })).rejects.toBe(failure);
-
+		}, { draftId: "d1", edits: { text: "Send edit" } })).rejects.toBe(failure);
 		await deliveryStarted.promise;
-		const replacement = draftDoc({ bodyText: "Replacement", bodyHtml: "<p>Replacement</p>" });
-		await messages.put("d1", replacement);
+		await draftSave(ctx, { draftId: "d1", text: "Concurrent edit" });
+		const replacement = await messages.getVersioned("d1");
 		delivery.reject(failure);
 		await outcome;
-
-		expect(await messages.get("d1")).toEqual(replacement);
+		expect(await messages.getVersioned("d1")).toEqual(replacement);
 	});
 
 	it.each([
@@ -264,16 +237,13 @@ describe("draft send claims", () => {
 });
 
 describe("draft revision conflicts", () => {
-	it.each(["send", "discard"])("a stale save cannot resurrect a draft removed by %s", async (winner) => {
-		const { ctx, messages, deliver } = setup();
+	it("a stale save cannot resurrect a discarded draft", async () => {
+		const { ctx, messages } = setup();
 		const reads = messages.pauseReads();
 		const staleSave = Promise.allSettled([draftSave(ctx, { draftId: "d1", text: "Stale text" })]);
-
 		await reads.reached;
-		if (winner === "send") await draftSend(ctx, deliver, { draftId: "d1" });
-		else await draftDiscard(ctx, { draftId: "d1" });
+		await draftDiscard(ctx, { draftId: "d1" });
 		reads.resume();
-
 		expect((await staleSave)[0].status).toBe("rejected");
 		expect(await messages.get("d1")).toBeNull();
 	});
@@ -282,46 +252,21 @@ describe("draft revision conflicts", () => {
 		const { ctx, messages } = setup();
 		const reads = messages.pauseReads();
 		const staleSave = Promise.allSettled([draftSave(ctx, { draftId: "d1", text: "Stale text" })]);
-
 		await reads.reached;
 		await draftSave(ctx, { draftId: "d1", text: "Latest text" });
 		reads.resume();
-
 		expect((await staleSave)[0].status).toBe("rejected");
 		expect((await messages.get("d1"))?.bodyText).toBe("Latest text");
 	});
 
-	it.each(["send", "discard"])("a stale %s cannot remove a newly saved revision", async (operation) => {
-		const { ctx, messages, sent, deliver } = setup();
-		const reads = messages.pauseReads();
-		const staleOperation = Promise.allSettled([
-			operation === "send"
-				? draftSend(ctx, deliver, { draftId: "d1" })
-				: draftDiscard(ctx, { draftId: "d1" }),
-		]);
-
-		await reads.reached;
-		await draftSave(ctx, { draftId: "d1", text: "Latest text" });
-		reads.resume();
-
-		expect((await staleOperation)[0].status).toBe("rejected");
-		expect(sent).toHaveLength(0);
-		expect((await messages.get("d1"))?.bodyText).toBe("Latest text");
-	});
-
-	it("a stale discard cannot delete a draft restored after a rejected send", async () => {
+	it("a stale discard cannot remove a newly saved revision", async () => {
 		const { ctx, messages } = setup();
 		const reads = messages.pauseReads();
 		const staleDiscard = Promise.allSettled([draftDiscard(ctx, { draftId: "d1" })]);
-		const failure = new Error("Delivery rejected");
-
 		await reads.reached;
-		await expect(draftSend(ctx, async () => { throw failure; }, {
-			draftId: "d1", edits: { text: "Latest send edit" },
-		})).rejects.toBe(failure);
+		await draftSave(ctx, { draftId: "d1", text: "Latest text" });
 		reads.resume();
-
 		expect((await staleDiscard)[0].status).toBe("rejected");
-		expect((await messages.get("d1"))?.bodyText).toBe("Latest send edit");
+		expect((await messages.get("d1"))?.bodyText).toBe("Latest text");
 	});
 });

@@ -1,3 +1,4 @@
+import { listDeliveries, reconcileDeliveries, resolveDelivery, type DeliveryAttempt } from "./deliveryJournal";
 import { z } from "zod";
 import { uploadDraftAttachment, removeDraftAttachment, readAttachment } from "./attachments";
 import { listInboxTools, type InboxToolName } from "./inboxMcpTools";
@@ -28,12 +29,22 @@ export async function runInboxToolHandler(
 	name: InboxToolName,
 	args: unknown,
 	deliver: Deliver,
+	projectSent?: (ctx: any, attempt: DeliveryAttempt) => Promise<{ id: string; threadId: string }>,
 ): Promise<unknown> {
 	if (
 		["get_thread", "mark_read", "pin_thread", "snooze_thread", "mark_done", "reply_to_thread", "reply_all_to_thread"].includes(name)
 		|| (name === "save_draft" && args !== null && typeof args === "object" && "threadId" in args)
 	) await requireMailboxReady(ctx);
 	switch (name) {
+		case "list_deliveries": return listDeliveries(ctx, args as never);
+		case "reconcile_deliveries": {
+			if (!projectSent) throw new Error("Delivery recovery unavailable");
+			return reconcileDeliveries(ctx, projectSent);
+		}
+		case "resolve_delivery": {
+			if (!projectSent) throw new Error("Delivery recovery unavailable");
+			return resolveDelivery(ctx, projectSent, args as never);
+		}
 		case "add_draft_attachment": return uploadDraftAttachment(ctx, args as never);
 		case "remove_draft_attachment": return removeDraftAttachment(ctx, args as never);
 		case "read_attachment": return readAttachment(ctx, args as never);
@@ -106,6 +117,7 @@ export async function dispatchMcpRequest(
 	ctx: any,
 	request: unknown,
 	deliver: Deliver,
+	projectSent?: (ctx: any, attempt: DeliveryAttempt) => Promise<{ id: string; threadId: string }>,
 ): Promise<unknown> {
 	const req = request as {
 		jsonrpc?: string;
@@ -177,7 +189,7 @@ export async function dispatchMcpRequest(
 						ctx,
 						tool.name,
 						parsed.data,
-						deliver,
+						deliver, projectSent,
 					);
 					return {
 						jsonrpc: "2.0",

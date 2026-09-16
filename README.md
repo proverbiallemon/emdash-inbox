@@ -8,7 +8,7 @@ Outbound goes through the native Cloudflare Email Sending Workers binding — no
 
 ## Status
 
-**Pre-alpha (v0.9.2, development).** Inbound/outbound mail, complete conversation pagination, pin / snooze / done, read state, compose/reply-all with CC/BCC, drafts, private attachments, settings, and 17 native MCP tools are implemented. Signatures, undo, and delivery recovery remain planned.
+**Pre-alpha (v0.10.0, development).** Inbound/outbound mail, complete conversation pagination, pin / snooze / done, read state, compose/reply-all with CC/BCC, drafts, private attachments, settings, durable send recovery, and 20 native MCP tools are implemented. Signatures and undo remain planned.
 
 Requires **EmDash 0.38.x**, tested against **0.38.0**. The mailbox uses resumable indexing and revision-checked writes. EmDash caps each storage query at 100 rows; complete operations now follow continuations. See [compatibility notes](docs/emdash-0.38-compatibility.md) and [pagination/attachment contracts and limits](docs/mailbox-and-attachments.md).
 
@@ -75,11 +75,13 @@ Use EmDash's native endpoint: **`https://your.site/_emdash/api/mcp`**.
 1. Activate emdash-inbox and enable its MCP tools under **Admin → Plugins**, reviewing the host's consent prompt.
 2. Connect with EmDash OAuth or a personal access token with **`mcp:tools:emdash-inbox`** scope. The caller also needs **`plugins:manage`** permission.
 3. After an upgrade that changes tool definitions, disable and re-enable MCP tools to refresh consent. EmDash 0.38 can show the switch enabled while discovery remains empty.
-4. Discover the 17 tools, namespaced by the host: `emdash-inbox__list_threads`, `emdash-inbox__compose_email`, `emdash-inbox__save_draft`, and so on. Tools cover triage, compose, reply-all, drafts, and attachment add / remove / read.
+4. Discover the 20 tools, namespaced by the host: `emdash-inbox__list_threads`, `emdash-inbox__compose_email`, `emdash-inbox__save_draft`, and so on. Tools cover triage, compose, reply-all, drafts, attachment add / remove / read, and delivery review/recovery.
 
 EmDash owns MCP transport, authentication, scope checks, and plugin consent. Sending and mailbox-changing tools are marked destructive in the host's tool metadata.
 
 The old `messages/mcp` JSON-RPC route remains for existing integrations. Its optional [proxy example](examples/mcp-proxy-route/) now requires **each caller's own Bearer token**. If you deployed the previous example, replace or remove it and revoke its shared `EMDASH_INBOX_MCP_TOKEN`: that version delegated the host token to anonymous requests. New clients should use the native endpoint above.
+
+See [durable send recovery](docs/durable-send-recovery.md) for Outbox behavior, stable request IDs, operator resolution, and recovery limits.
 
 ## Development checks
 
@@ -107,6 +109,7 @@ pnpm validate
 | **M7** ✅ | REST-to-native binding migration for outbound (drops the `accountId` / `apiToken` settings + the `network:fetch` capability); admin-auth `messages/mcp` route exposing 7 inbox tools over JSON-RPC 2.0 (`list_threads`, `get_thread`, `search_messages`, `mark_read`, `pin_thread`, `snooze_thread`, `mark_done`); typed `EmailBinding` + `DeliverError` + `wrapBindingError()` helper module. |
 | **M8** ✅ | Compose-from-scratch with CC / BCC, reply-all, and the full draft lifecycle (save / resume / send / discard, Drafts tab) — in both the admin UI **and** the `messages/mcp` route (7 new tools, catalog of 14), all wrapping one shared operations core. Host-side MCP proxy example so Claude and other MCP clients can connect despite the response envelope. Attachments, signatures, toast undo, and pagination moved to M8b. |
 | **M8b** ✅ | Private inbound/outbound attachments, complete thread pagination, resumable substring search, and server-side thread actions. Signatures and toast undo remain follow-up polish. |
+| **Send recovery** ✅ | Durable send attempts, locked Outbox, receipt recovery, stable request IDs, and explicit review of uncertain outcomes. |
 | **M9** | Bundle classification (Orders, Shipping, Commissions, Fans, Promos, Updates) + highlights — structured field extraction surfaced as inline cards. Reminders, content linking. **v1.0.** |
 
 ## Attribution

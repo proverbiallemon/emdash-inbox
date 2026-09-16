@@ -12,7 +12,8 @@ import { createNativeHost } from "./helpers/nativeHost";
 describe("published EmDash MCP HTTP adapter", () => {
 	let host: Awaited<ReturnType<typeof createNativeHost>>;
 	let denied: string[];
-	beforeEach(async () => { host = await createNativeHost(); denied = []; });
+	let routed: string[];
+	beforeEach(async () => { host = await createNativeHost(); denied = []; routed = []; });
 	afterEach(async () => { await host?.close(); });
 
 	async function post(
@@ -38,6 +39,7 @@ describe("published EmDash MCP HTTP adapter", () => {
 					}));
 				},
 				async handlePluginMcpTool(pluginId: string, _name: string, route: string, input: unknown) {
+					routed.push(route);
 					return host.manager.invokeRoute(pluginId, route, {
 						body: input,
 						request: new Request(request.url, { method: "POST", body: JSON.stringify(input) }),
@@ -70,11 +72,14 @@ describe("published EmDash MCP HTTP adapter", () => {
 		expect(initialized.result.capabilities.tools).toBeDefined();
 		const listed = await rpc(await post("tools/list"));
 		const inboxTools = listed.result.tools.filter((tool: { name: string }) => tool.name.startsWith("emdash-inbox__"));
-		expect(inboxTools).toHaveLength(17);
+		expect(inboxTools).toHaveLength(20);
 		expect(inboxTools).toEqual(expect.arrayContaining([
 			expect.objectContaining({ name: "emdash-inbox__save_draft", inputSchema: expect.objectContaining({ type: "object" }), annotations: { destructiveHint: true } }),
 			expect.objectContaining({ name: "emdash-inbox__list_threads", annotations: { destructiveHint: false } }),
 			expect.objectContaining({ name: "emdash-inbox__read_attachment", annotations: { destructiveHint: false } }),
+			expect.objectContaining({ name: "emdash-inbox__list_deliveries", inputSchema: expect.objectContaining({ type: "object" }) }),
+			expect.objectContaining({ name: "emdash-inbox__reconcile_deliveries", inputSchema: expect.objectContaining({ type: "object" }) }),
+			expect.objectContaining({ name: "emdash-inbox__resolve_delivery", annotations: { destructiveHint: true } }),
 		]));
 	});
 
@@ -148,5 +153,27 @@ describe("published EmDash MCP HTTP adapter", () => {
 	it("returns 405 for unsupported event-stream GET connections", async () => {
 		const response = await GET({} as Parameters<typeof GET>[0]);
 		expect(response.status).toBe(405);
+	});
+
+	it.each(["list_deliveries", "reconcile_deliveries", "resolve_delivery"])("gates %s before route/storage access", async (name) => {
+		const args = name === "resolve_delivery" ? { attemptId: "private-attempt", resolution: "restore", confirmDuplicateRisk: true } : {};
+		for (const auth of [
+			{ role: 40 as const, scopes: ["mcp:tools:emdash-inbox"], code: "INSUFFICIENT_PERMISSIONS" },
+			{ role: 50 as const, scopes: ["content:read"], code: "INSUFFICIENT_SCOPE" },
+		]) {
+			const result = await rpc(await post("tools/call", { name: `emdash-inbox__${name}`, arguments: args }, auth));
+			expect(result.result.isError).toBe(true);
+			expect(result.result._meta.code).toBe(auth.code);
+		}
+		expect(routed).toEqual([]);
+	});
+
+	it.each(["list_deliveries", "reconcile_deliveries"])("dispatches authorized %s through the native host", async (name) => {
+		const result = await rpc(await post("tools/call", { name: `emdash-inbox__${name}`, arguments: {} }));
+		expect(result.result.isError, JSON.stringify(result)).not.toBe(true);
+		const data = JSON.parse(result.result.content[0].text);
+		if (name === "list_deliveries") expect(data).toMatchObject({ items: [], hasMore: false });
+		else expect(data).toMatchObject({ recovered: 0, restored: 0, uncertain: 0 });
+		expect(routed).toEqual([`mcp/${name}`]);
 	});
 });

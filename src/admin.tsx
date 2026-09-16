@@ -13,12 +13,13 @@ import { ThreadView } from "./components/ThreadView";
 import { SettingsPage } from "./components/SettingsPage";
 import { ComposeView } from "./components/ComposeView";
 import { DraftCard, type DraftListItem } from "./components/DraftCard";
+import { OutboxView } from "./components/OutboxView";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
 function readStatusFromUrl(): TabId {
 	const s = new URLSearchParams(window.location.search).get("status");
-	return s === "snoozed" || s === "done" || s === "all" || s === "drafts" ? s : "inbox";
+	return s === "snoozed" || s === "done" || s === "all" || s === "drafts" || s === "outbox" ? s : "inbox";
 }
 
 function readMessageFromUrl(): string | null {
@@ -119,7 +120,7 @@ function InboxPage() {
 
 	React.useEffect(() => {
 		writeUrl(status, selectedMessageId, composeId);
-		if (!selectedMessageId && composeId === null) {
+		if (!selectedMessageId && composeId === null && status !== "outbox") {
 			status === "drafts" ? void refetchDrafts() : void refetch(status);
 		}
 			return () => { pages.current.reset(); };
@@ -136,7 +137,7 @@ function InboxPage() {
 		try {
 			const res = await apiFetch(`${API}/threads/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId: summary.threadId, ...action }) });
 			await parseApiResponse(res, "Failed to update thread");
-			if (status !== "drafts" && viewRef.current === actionView) await refetch(status);
+			if (status !== "drafts" && status !== "outbox" && viewRef.current === actionView) await refetch(status);
 		} catch (err) { if (viewRef.current === actionView) setError(err instanceof Error ? err.message : String(err)); }
 		finally { setBusyThreadIds(s => { const next = new Set(s); next.delete(summary.id); return next; }); }
 	};
@@ -155,7 +156,6 @@ function InboxPage() {
 					draftId={composeId === "new" ? null : composeId}
 					onClose={() => {
 						setComposeId(null);
-						status === "drafts" ? void refetchDrafts() : void refetch(status);
 					}}
 				/>
 			</div>
@@ -199,17 +199,17 @@ function InboxPage() {
 
 			<div className="flex items-center justify-between gap-3">
 				<FilterTabs current={status} onChange={setStatus} />
-				<button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={loading} onClick={() => status === "drafts" ? void refetchDrafts() : void refetch(status)}>Refresh</button>
+				{status !== "outbox" && <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={loading} onClick={() => status === "drafts" ? void refetchDrafts() : void refetch(status)}>Refresh</button>}
 			</div>
 
-			{indexing && <p role="status" className="text-sm text-muted-foreground">Updating the mailbox index…</p>}
-			{error && (
+			{status !== "outbox" && indexing && <p role="status" className="text-sm text-muted-foreground">Updating the mailbox index…</p>}
+			{status !== "outbox" && error && (
 				<div className="p-3 rounded-lg border border-destructive/50 bg-destructive/5 text-sm text-destructive">
 					{error}
 				</div>
 			)}
 
-			{status === "drafts" ? (
+			{status === "outbox" ? <OutboxView /> : status === "drafts" ? (
 				loading ? (
 					<SkeletonList />
 				) : drafts.length === 0 ? (

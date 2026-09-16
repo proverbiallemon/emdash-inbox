@@ -5,6 +5,9 @@ describe("listInboxTools", () => {
 	it("exposes the full tool catalog by name, in order", () => {
 		const names = listInboxTools().map((t) => t.name);
 		expect(names).toEqual([
+			"list_deliveries",
+			"reconcile_deliveries",
+			"resolve_delivery",
 			"add_draft_attachment",
 			"remove_draft_attachment",
 			"read_attachment",
@@ -58,8 +61,8 @@ describe("listInboxTools", () => {
 describe("M8 compose/draft tools", () => {
 	const tool = (name: string) => listInboxTools().find((t) => t.name === name)!;
 
-	it("catalog has 17 tools", () => {
-		expect(listInboxTools()).toHaveLength(17);
+	it("catalog has 20 tools", () => {
+		expect(listInboxTools()).toHaveLength(20);
 	});
 
 	it("compose_email accepts string or array recipients", () => {
@@ -96,5 +99,28 @@ describe("M8 compose/draft tools", () => {
 
 	it("list_drafts accepts an empty object", () => {
 		expect(tool("list_drafts").inputSchema.safeParse({}).success).toBe(true);
+	});
+
+	it.each([
+		["compose_email", { to: "a@example.com", subject: "s", text: "t" }],
+		["reply_to_thread", { threadId: "t", text: "reply" }],
+		["reply_all_to_thread", { threadId: "t", text: "reply" }],
+		["send_draft", { draftId: "d" }],
+	])("%s preserves a stable request key and rejects unbounded keys", (name, input) => {
+		const schema = tool(name as string).inputSchema;
+		expect(schema.parse({ ...input as object, requestId: "attempt-1" })).toHaveProperty("requestId", "attempt-1");
+		for (const requestId of ["", "x".repeat(201), 42]) {
+			expect(schema.safeParse({ ...input as object, requestId }).success).toBe(false);
+		}
+	});
+
+	it("bounds delivery pages and requires an explicit true duplicate-risk acknowledgement", () => {
+		const list = tool("list_deliveries").inputSchema;
+		expect(list.safeParse({ limit: 100, cursor: "continuation" }).success).toBe(true);
+		for (const limit of [0, 101, 1.5]) expect(list.safeParse({ limit }).success).toBe(false);
+		const resolve = tool("resolve_delivery").inputSchema;
+		expect(resolve.safeParse({ attemptId: "a", resolution: "restore", confirmDuplicateRisk: true }).success).toBe(true);
+		expect(resolve.safeParse({ attemptId: "a", resolution: "restore", confirmDuplicateRisk: false }).success).toBe(false);
+		expect(resolve.safeParse({ attemptId: "a", resolution: "retry" }).success).toBe(false);
 	});
 });

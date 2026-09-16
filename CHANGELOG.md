@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Native EmDash MCP registration for all 17 inbox tools, with host-managed
+- Durable Outbox and send journal: locked snapshots survive interrupted requests,
+  accepted receipts recover into Sent, and unknown outcomes require operator review.
+- Stable optional request IDs on sending routes/tools, plus three delivery review
+  MCP tools. Browser retries retain the original request instead of starting another.
+  See `docs/durable-send-recovery.md` for limits and resolution behavior.
+
+- Native EmDash MCP registration for all 20 inbox tools, with host-managed
   authentication, plugin consent, scope checks, and destructive-tool metadata.
 - SQLite-backed integration tests for mail threading, draft contention,
   inbound authentication, and cron dispatch; published MCP HTTP adapter tests.
@@ -43,12 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exposed normalization in postal-mime; the corrected parser ships in 0.9.1.
 - Draft updates no longer send stale HTML after a text edit. Revision-checked
   save/send/discard operations prevent stale writes and concurrent duplicate
-  sends; rejected delivery restores the latest edits without replacing a row.
+  sends; definitive rejection restores the latest edits, while uncertain outcomes stay locked.
 - Legacy migrations skip drafts so delayed scans cannot recreate sent or
   discarded rows. Server replies use escaped text quotes without invoking
   browser-only DOMPurify; HTML-only originals receive an omission note.
 - Outbound storage retains complete provider Message-IDs and reply References.
-  Missing/opaque transport IDs are logged and retained without guessing a domain.
+  Missing/opaque transport IDs are retained with a clearly local fallback identity.
 - Email rendering strips remote-loading CSS, responsive sources and embedded
   resources; external images require explicit opt-in.
 - The legacy proxy requires each caller's Bearer token instead of supplying a
@@ -66,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Development package is now 0.9.2. `list_threads` and `search_messages` return
+- Development package is now 0.10.0. `list_threads` and `search_messages` return
   `{items,cursor,hasMore,indexing?}` instead of bare arrays. Continue empty search
   pages while `hasMore` is true; retry indexing responses. `get_thread` now
   includes storage IDs for attachment reads. Legacy `messages/list` remains.

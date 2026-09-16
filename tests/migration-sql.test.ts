@@ -27,7 +27,7 @@ describe("native migration and draft contention", () => {
 	});
 
 	it.each(["discard_draft", "send_draft"])(
-		"a delayed list migration cannot recreate a draft removed by %s",
+		"a delayed list migration cannot resurrect a draft after %s",
 		async (operation) => {
 			const saved = await host.request("mcp/save_draft", {
 				to: "reader@example.com", subject: "Fresh draft", text: "Ready to send",
@@ -61,7 +61,8 @@ describe("native migration and draft contention", () => {
 			try {
 				const removed = await host.request(`mcp/${operation}`, { draftId });
 				expect(removed.success, JSON.stringify(removed)).toBe(true);
-				expect(await host.messages.get(draftId)).toBeNull();
+				if (operation === "discard_draft") expect(await host.messages.get(draftId)).toBeNull();
+				else expect(await host.messages.get(draftId)).toMatchObject({ status: "done", messageId: "<migration-send@cloudflare.example>" });
 			} finally {
 				resume.resolve();
 			}
@@ -69,7 +70,8 @@ describe("native migration and draft contention", () => {
 
 			expect(listed.success, JSON.stringify(listed)).toBe(true);
 			expect(listed.data).toEqual([]);
-			expect(await host.messages.get(draftId)).toBeNull();
+			if (operation === "discard_draft") expect(await host.messages.get(draftId)).toBeNull();
+				else expect(await host.messages.get(draftId)).toMatchObject({ status: "done", messageId: "<migration-send@cloudflare.example>" });
 			const sent = await host.messages.query({ where: { status: "done" } });
 			expect(sent.items).toHaveLength(operation === "send_draft" ? 1 : 0);
 		},

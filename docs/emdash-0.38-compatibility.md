@@ -1,6 +1,6 @@
 # EmDash 0.38 compatibility and next steps
 
-Reviewed September 16, 2026 against the published `emdash@0.38.0` package and its [tagged upstream source](https://github.com/emdash-cms/emdash/releases/tag/emdash%400.38.0), released September 15. Inbox 0.9.2 is deployed on the PBWeb Cloudflare host, including M8b pagination and private attachments. It has not been published as a plugin release. See the [production smoke-test report](production-smoke-2026-09-16.md) for observed behavior and remaining checks.
+Reviewed September 16, 2026 against the published `emdash@0.38.0` package and its [tagged upstream source](https://github.com/emdash-cms/emdash/releases/tag/emdash%400.38.0), released September 15. Inbox 0.10.0 is deployed on the PBWeb Cloudflare host, including M8b pagination, private attachments, and durable send recovery. It has not been published as a plugin release. See the [production smoke-test report](production-smoke-2026-09-16.md) for observed behavior and remaining checks.
 
 ## What upstream provides
 

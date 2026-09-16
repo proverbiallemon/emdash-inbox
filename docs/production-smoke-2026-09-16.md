@@ -1,6 +1,6 @@
 # Production smoke test — September 16, 2026
 
-**Current result:** PBWeb runs EmDash 0.38.0 with Inbox 0.9.2. Complete-conversation pagination, private attachments, and all 17 native MCP tools are deployed. Incoming MIME bytes were independently checked; a 512 KiB file downloaded from the recipient’s Proton desktop app exactly matched the original. The temporary test tokens were revoked and their local secrets removed. The final automated run passed 360 tests across 30 files.
+**Current result:** PBWeb runs EmDash 0.38.0 with Inbox 0.10.0. Durable send recovery, complete-conversation pagination, private attachments, and all 20 native MCP tools are deployed. The latest live check delivered one synthetic message to the Proton desktop app; replaying its request returned the same attempt and message IDs. All temporary tokens were revoked. The final automated run passed 432 tests across 33 files.
 
 ## Initial host upgrade
 
@@ -69,4 +69,16 @@ The recipient-side outgoing check found a second defect: a 512 KiB binary file a
 - Revoked the temporary Inbox-scoped token through admin settings, confirmed HTTP 401 with that credential, removed the mode-0600 local token file, and cleared its temporary UI capture. Admin settings shows no remaining personal API tokens. Inbox MCP consent remains enabled.
 - Eight public page routes returned 200 after the final deployment. All 38 monitored host source/public files remained byte-identical; public content/design, existing bindings, mail routing, and DNS were preserved.
 
-The plugin and host deployment changes remain in local working trees; this work has not been committed, pushed, or published as a GitHub/npm release. The next reliability task is a durable delivery journal and reconciliation for crashes or ambiguous provider outcomes. Remaining live checks and operational limits above still apply.
+## Durable send recovery: 0.10.0 verification (08:53 UTC)
+
+- Host Worker version: `67413f26-cb5d-4b8d-a784-675e10cd2ea1`. The inbound sidecar is unchanged from the 0.9.2 verification.
+- Deployed package: `emdash-inbox-0.10.0.tgz`, SHA-256 `a2d2a0db0e630737d941faa00d58e4ca9e233a787d9f9a690c49eb98cc501ad2`. The host uses the exact vendored artifact.
+- Node 24.19.0: **432 tests / 33 files passed**, TypeScript, bundled-parser provenance checks, package build, and native validation (20 tools / 2 admin pages). Host installation/build and Wrangler dry-run passed before deployment.
+- SQLite fault tests cover interrupted preparation, lost write acknowledgements, concurrent request-key claims, uncertain delivery, accepted-receipt projection recovery, final-edit preservation, late receipts racing operator resolution, and discarded-draft resurrection. DOM tests cover lost-response retries, locked composers, missing drafts, and explicit recovery acknowledgement. Faults were injected only locally.
+- Refreshed plugin MCP consent and used an Inbox-only temporary token. The SDK discovered 20 tools. Sending a synthetic message produced `deliveryStatus: sent`; replaying the identical request returned the same attempt/message IDs, while reusing the key with a changed subject was rejected.
+- The saved provider Message-ID is `<Q3gGPICSeHPE2XcbgOlborZW5IQFr5vbttB6@pbweb.me>`. Inbox returned one message in that thread. Proton desktop search showed one matching conversation and one received body, with the expected synthetic text.
+- The deployed Outbox shows Sent and the provider receipt. UI and MCP reconciliation reported zero errors and no unresolved attempts. Delivery summaries omit bodies, BCC, and private object keys. Anonymous delivery-list access returned HTTP 401.
+- Revoked `Inbox durable smoke 2026-09-16 temporary`; confirmed HTTP 401 using that credential, removed the local secret, and cleared the temporary browser capture. Admin settings shows no remaining personal API tokens. Inbox MCP consent remains enabled.
+- Nine public routes returned HTTP 200. All 38 monitored host source/public files remain byte-identical. Existing bindings, public content/design, mail routing, and DNS are preserved.
+
+The code is on `feature/emdash-038-reliability`; this is a deployed development build, not a published npm/GitHub release. Host integration changes remain separate from its pre-existing content/design changes. Next priorities are signatures and reversible mailbox actions, followed by bundle classification. See [durable-send limits](durable-send-recovery.md#operational-limits): provider acceptance before receipt persistence still requires operator review.

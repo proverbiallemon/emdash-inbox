@@ -3,13 +3,14 @@ import { normalizeRecipients, deriveReplyAll } from "./recipients";
 import { replyDefaults, plainTextToHtml } from "./replyDefaults";
 import { allRows, loadThreadRows } from "./mailboxStore";
 import { cleanupAttachments, prepareOutgoingAttachments, validateOutgoingSize, type StoredAttachment } from "./attachments";
+import { findDeliveryRequest, markDeliveryDraftDiscarded, type DeliveryResult } from "./deliveryJournal";
 
 /**
  * Shared compose/draft operations. Both the messages/* HTTP routes and the
  * MCP tool handlers call these — the routing layer only translates
  * transport-specific input/output shapes and error types; all decisions
  * (recipient math, subject defaulting, quote-body assembly, draft upsert
- * rules, the "claim-then-deliver-then-restore-on-failure" send sequence)
+ * rules, the durable journal handoff)
  * live here exactly once.
  *
  * `ctx` is the same duck-typed plugin/route context every other handler in
@@ -23,6 +24,7 @@ import { cleanupAttachments, prepareOutgoingAttachments, validateOutgoingSize, t
  */
 
 export interface ComposeInput {
+	requestId?: string;
 	to: string | string[];
 	cc?: string | string[];
 	bcc?: string | string[];
@@ -32,6 +34,7 @@ export interface ComposeInput {
 }
 
 export interface ReplyInput {
+	requestId?: string;
 	threadId: string;
 	text: string;
 	html?: string;
@@ -55,6 +58,9 @@ export interface DraftInput {
 export type Deliver = (
 	ctx: unknown,
 	event: {
+		requestId?: string;
+		requestPayload?: unknown;
+		draftClaim?: { id: string; revision: string; snapshot: MessageDoc };
 		message: {
 			to: string;
 			toAll?: string[];
@@ -68,7 +74,14 @@ export type Deliver = (
 		};
 		source: string;
 	},
-) => Promise<{ id: string; threadId: string } | null>;
+) => Promise<({ id: string | null; threadId: string | null } & Partial<DeliveryResult>) | null>;
+
+export type SendResult = { id: string | null; threadId: string | null } & Partial<DeliveryResult>;
+
+function requestPayload(operation: string, input: object): unknown {
+	const { requestId: _requestId, ...payload } = input as Record<string, unknown>;
+	return { operation, ...payload };
+}
 
 export interface DraftRow {
 	id: string;
@@ -96,7 +109,12 @@ export async function composeSend(
 	ctx: any,
 	deliver: Deliver,
 	input: ComposeInput,
-): Promise<{ id: string | null; threadId: string | null }> {
+): Promise<SendResult> {
+	const payload = requestPayload("compose", input);
+	if (input.requestId) {
+		const previous = await findDeliveryRequest(ctx, input.requestId, payload);
+		if (previous) return previous;
+	}
 	const to = normalizeOrThrow(input.to);
 	if (to.length === 0) throw new ComposeError("to: at least one recipient is required");
 	const cc = normalizeOrThrow(input.cc);
@@ -112,18 +130,24 @@ export async function composeSend(
 	validateOutgoingSize([], text, html);
 
 	const result = await deliver(ctx, {
+		requestId: input.requestId, requestPayload: payload,
 		message: { to: to[0], toAll: to, cc, bcc, subject, text, html },
 		source: "emdash-inbox:compose",
 	});
 
-	return { id: result?.id ?? null, threadId: result?.threadId ?? null };
+	return result ?? { id: null, threadId: null };
 }
 
 export async function replySend(
 	ctx: any,
 	deliver: Deliver,
 	input: ReplyInput,
-): Promise<{ id: string | null; threadId: string | null }> {
+): Promise<SendResult> {
+	const payload = requestPayload("reply", input);
+	if (input.requestId) {
+		const previous = await findDeliveryRequest(ctx, input.requestId, payload);
+		if (previous) return previous;
+	}
 	if (typeof input.threadId !== "string" || input.threadId.trim() === "") {
 		throw new ComposeError("threadId: required non-empty string");
 	}
@@ -187,6 +211,7 @@ export async function replySend(
 	validateOutgoingSize([], input.text, html);
 
 	const result = await deliver(ctx, {
+		requestId: input.requestId, requestPayload: payload,
 		message: {
 			to: to[0],
 			toAll: to,
@@ -199,7 +224,7 @@ export async function replySend(
 		source: "emdash-inbox:reply",
 	});
 
-	return { id: result?.id ?? null, threadId: result?.threadId ?? null };
+	return result ?? { id: null, threadId: null };
 }
 
 export async function draftSave(ctx: any, input: DraftInput): Promise<{ draftId: string }> {
@@ -290,8 +315,13 @@ export async function draftSave(ctx: any, input: DraftInput): Promise<{ draftId:
 export async function draftSend(
 	ctx: any,
 	deliver: Deliver,
-	input: { draftId: string; edits?: Partial<ComposeInput> },
-): Promise<{ id: string | null; threadId: string | null }> {
+	input: { draftId: string; edits?: Partial<ComposeInput>; requestId?: string },
+): Promise<SendResult> {
+	const payload = requestPayload("draft", input);
+	if (input.requestId) {
+		const previous = await findDeliveryRequest(ctx, input.requestId, payload);
+		if (previous) return previous;
+	}
 	const messages = (ctx as any).storage.messages;
 	const current = (await messages.getVersioned(input.draftId)) as {
 		value: MessageDoc;
@@ -317,48 +347,23 @@ export async function draftSend(
 	// oversized body must never consume the draft or reach mail transport.
 	await prepareOutgoingAttachments(ctx, draft.attachments ?? [], text, html);
 
-	// Only the request holding this revision may claim the draft for delivery.
-	// This prevents concurrent sends, but cannot guarantee exactly-once delivery
-	// across process crashes or ambiguous transport failures.
-	const claimed = await messages.compareAndDelete(input.draftId, current.revision);
-	if (!claimed.applied) {
-		throw new ComposeError(`draft ${input.draftId} changed or was removed; reload before sending`);
-	}
-	try {
-		const result = await deliver(ctx, {
-			message: {
-				to: to[0],
-				toAll: to,
-				cc,
-				bcc,
-				subject,
-				text,
-				html,
-				...(draft.inReplyTo ? { inReplyTo: draft.inReplyTo } : {}),
-				...(draft.attachments?.length ? { attachments: draft.attachments } : {}),
-			},
-			// Mirrors composeSend/replySend's source convention — a draft that
-			// was threaded off another message sends as a reply, otherwise as
-			// a fresh compose. Not specified verbatim in the brief; chosen for
-			// consistency with the other two send paths' audit trail.
-			source: draft.inReplyTo ? "emdash-inbox:reply" : "emdash-inbox:compose",
-		});
-		return { id: result?.id ?? null, threadId: result?.threadId ?? null };
-	} catch (err) {
-		// Preserve the actual send edits without overwriting any replacement row.
-		await messages.compareAndSet(input.draftId, null, {
-			...draft,
-			to: to[0],
-			toAll: to,
-			cc,
-			bcc,
-			subject,
-			bodyText: text,
-			bodyHtml: html,
-			sortAt: new Date().toISOString(),
-		});
-		throw err;
-	}
+	// The journal claims this exact revision and keeps the final edits durable.
+	// A losing claim never reaches transport; unknown outcomes stay locked.
+	const snapshot: MessageDoc = {
+		...draft, to: to[0], toAll: to, cc, bcc, subject, bodyText: text, bodyHtml: html,
+		sortAt: new Date().toISOString(),
+	};
+	const result = await deliver(ctx, {
+		requestId: input.requestId, requestPayload: payload,
+		draftClaim: { id: input.draftId, revision: current.revision, snapshot },
+		message: {
+			to: to[0], toAll: to, cc, bcc, subject, text, html,
+			...(draft.inReplyTo ? { inReplyTo: draft.inReplyTo } : {}),
+			...(draft.attachments?.length ? { attachments: draft.attachments } : {}),
+		},
+		source: draft.inReplyTo ? "emdash-inbox:reply" : "emdash-inbox:compose",
+	});
+	return result ?? { id: null, threadId: null };
 }
 
 export async function draftDiscard(ctx: any, input: { draftId: string }): Promise<{ ok: true }> {
@@ -369,6 +374,11 @@ export async function draftDiscard(ctx: any, input: { draftId: string }): Promis
 	} | null;
 	if (!current || current.value.status !== "draft") {
 		throw new NotFoundError(`draft ${input.draftId} not found`);
+	}
+	// Persist deletion intent before removing a recovered draft. Otherwise a
+	// later recovery scan could recreate it from the immutable send snapshot.
+	if (current.value.deliveryAttemptId) {
+		await markDeliveryDraftDiscarded(ctx, current.value.deliveryAttemptId, input.draftId);
 	}
 	const discarded = await messages.compareAndDelete(input.draftId, current.revision);
 	if (!discarded.applied) {

@@ -92,7 +92,7 @@ function iso(value: string): string {
 function makeMessageKey(id: string, message: MessageDoc): string {
 	return `${iso(message.receivedAt)}|${encodeURIComponent(id)}`;
 }
-function prepareMessage(id: string, message: IndexedMessage, previous?: IndexedMessage): IndexedMessage {
+export function prepareMessage(id: string, message: IndexedMessage, previous?: IndexedMessage): IndexedMessage {
 	const oldThreads = new Set(previous?.indexPreviousThreadIds ?? message.indexPreviousThreadIds ?? []);
 	if (previous && messageThread(previous) !== messageThread(message)) oldThreads.add(messageThread(previous));
 	return {
@@ -110,7 +110,7 @@ function prepareMessage(id: string, message: IndexedMessage, previous?: IndexedM
 
 /** Real messages are never deleted; the dirty marker commits with their data. */
 export async function putMessage(ctx: any, id: string, message: MessageDoc): Promise<void> {
-	if (message.status === "draft") throw new Error("Drafts must use draft storage operations");
+	if ((message.status === "draft" || message.status === "outbox")) throw new Error("Drafts must use draft storage operations");
 	const result = await ctx.storage.messages.compareAndSet(id, null, prepareMessage(id, message));
 	if (!result.applied) throw new Error("Message already exists");
 }
@@ -119,11 +119,11 @@ export async function putMessage(ctx: any, id: string, message: MessageDoc): Pro
 export async function mutateMessage(ctx: any, id: string, patch: MessagePatch): Promise<MessageDoc | null> {
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
 		const snapshot = await ctx.storage.messages.getVersioned(id);
-		if (!snapshot || snapshot.value.status === "draft") return null;
+		if (!snapshot || (snapshot.value.status === "draft" || snapshot.value.status === "outbox")) return null;
 		const changes = patch(snapshot.value);
 		if (changes === null) return null;
 		const next = prepareMessage(id, { ...snapshot.value, ...changes }, snapshot.value);
-		if (next.status === "draft") throw new Error("Thread operations cannot turn a message into a draft");
+		if ((next.status === "draft" || next.status === "outbox")) throw new Error("Thread operations cannot turn a message into a draft");
 		const result = await ctx.storage.messages.compareAndSet(id, snapshot.revision, next);
 		if (result.applied) return next;
 	}
@@ -161,7 +161,7 @@ async function legacyThread(ctx: any, message: MessageDoc, seen = new Set<string
 		if (seen.has(candidate)) continue;
 		const result = await ctx.storage.messages.query({ where: { messageId: candidate }, limit: 1 });
 		const parent = result.items?.[0]?.data as MessageDoc | undefined;
-		if (!parent || parent.status === "draft") continue;
+		if (!parent || (parent.status === "draft" || parent.status === "outbox")) continue;
 		const resolved = await legacyThread(ctx, parent, new Set(seen));
 		parents.set(candidate, { messageId: parent.messageId, threadId: resolved.threadId });
 		break;
@@ -177,7 +177,7 @@ async function migratePage(ctx: any): Promise<boolean> {
 	for (const row of page.items as MessageRow<IndexedMessage>[]) {
 		for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
 			const current = await ctx.storage.messages.getVersioned(row.id);
-			if (!current || current.value.status === "draft" || current.value.indexSchemaVersion === INDEX_VERSION) break;
+			if (!current || (current.value.status === "draft" || current.value.status === "outbox") || current.value.indexSchemaVersion === INDEX_VERSION) break;
 			const derived = await legacyThread(ctx, current.value);
 			const next = prepareMessage(row.id, { ...current.value, ...derived }, current.value);
 			const written = await ctx.storage.messages.compareAndSet(row.id, current.revision, next);
@@ -210,7 +210,7 @@ async function makeThreadIndex(ctx: any, threadId: string): Promise<ThreadIndex 
 	do {
 		const page = await ctx.storage.messages.query({ where: { threadId }, limit: 50, cursor });
 		for (const { id, data } of page.items as MessageRow[]) {
-			if (data.status === "draft") continue;
+			if ((data.status === "draft" || data.status === "outbox")) continue;
 			messageCount++;
 			if (data.read === false) unreadCount++;
 			pinned ||= data.pinned;
@@ -264,7 +264,7 @@ async function repairDirtyMessages(ctx: any): Promise<boolean> {
 		// Capture search revision before the source snapshot for the same reason as threads.
 		const search = await ctx.storage.searchDocuments.getVersioned(row.id);
 		const source = await ctx.storage.messages.getVersioned(row.id);
-		if (!source || source.value.status === "draft" || !source.value.indexDirty) continue;
+		if (!source || (source.value.status === "draft" || source.value.status === "outbox") || !source.value.indexDirty) continue;
 		captured.push({ id: row.id, ...source, searchRevision: search?.revision ?? null });
 		threadIds.add(messageThread(source.value));
 		for (const previous of source.value.indexPreviousThreadIds ?? []) threadIds.add(previous);
@@ -370,7 +370,7 @@ export async function searchMessagePage(ctx: any, input: SearchPageInput): Promi
 		if (matchedIds.length === limit || inspected >= SEARCH_SCAN_LIMIT || !page.hasMore) break;
 	} while (after);
 	const messages = await ctx.storage.messages.getMany(matchedIds) as Map<string, MessageDoc>;
-	const items = matchedIds.flatMap((id) => { const message = messages.get(id); return message && message.status !== "draft" ? [{ ...mailboxPublicMessage(message), id }] : []; });
+	const items = matchedIds.flatMap((id) => { const message = messages.get(id); return message && message.status !== "draft" && message.status !== "outbox" ? [{ ...mailboxPublicMessage(message), id }] : []; });
 	return { items, hasMore, cursor: hasMore && after ? encodeCursor({ v: INDEX_VERSION, kind: "search", filter: query, after }) : undefined };
 }
 

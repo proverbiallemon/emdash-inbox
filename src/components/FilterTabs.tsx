@@ -1,13 +1,14 @@
 import * as React from "react";
 
 export type StatusFilter = "inbox" | "snoozed" | "done" | "all";
-export type TabId = StatusFilter | "drafts";
+export type TabId = StatusFilter | "drafts" | "outbox";
 
 const TABS: { id: TabId; label: string }[] = [
 	{ id: "inbox", label: "Inbox" },
 	{ id: "snoozed", label: "Snoozed" },
 	{ id: "done", label: "Done" },
 	{ id: "drafts", label: "Drafts" },
+	{ id: "outbox", label: "Outbox" },
 	{ id: "all", label: "All" },
 ];
 
@@ -18,7 +19,7 @@ interface Props {
 
 export function FilterTabs({ current, onChange }: Props) {
 	return (
-		<div className="flex gap-1 border-b">
+		<div className="flex flex-wrap gap-1 border-b">
 			{TABS.map((tab) => {
 				const active = tab.id === current;
 				return (

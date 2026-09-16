@@ -44,7 +44,7 @@ describe("compose attachment interactions", () => {
 			const body = JSON.parse(init.body as string); calls.push({ path, body });
 			if (path.endsWith("draft-save")) return response({ draftId: "draft-1" });
 			if (path.endsWith("attachments/upload")) return upload.promise;
-			return response({ ok: true });
+			return response({ id: "sent-message", threadId: "thread", deliveryStatus: "sent" });
 		});
 		await render(React.createElement(ComposeView, { draftId: null, onClose: () => { closed++; } }));
 		await selectFiles([file()]);
@@ -134,7 +134,7 @@ describe("compose attachment interactions", () => {
 		expect(button("Discard").disabled).toBe(true);
 		await click("Discard"); await React.act(async () => { container.firstElementChild!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
 		expect(closed).toBe(0); expect(calls.some((call) => call.path.includes("discard"))).toBe(false); expect(calls.at(-1)?.signal).toBeUndefined();
-		await React.act(async () => { delivery.resolve(response({ ok: true })); }); expect(sent).toBe(1);
+		await React.act(async () => { delivery.resolve(response({ id: "sent-message", threadId: "thread", deliveryStatus: "sent" })); }); expect(sent).toBe(1);
 	});
 
 	it("closes an attached reply without deletion, while explicit Discard deletes its saved draft", async () => {

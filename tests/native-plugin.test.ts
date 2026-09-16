@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HookPipeline, PluginStorageRepository } from "emdash";
 import { createNativeHost } from "./helpers/nativeHost";
 import { createPlugin } from "../src/index";
 
@@ -8,12 +9,16 @@ vi.mock("cloudflare:workers", () => ({ env: { EMAIL: transport } }));
 
 it("registers all inbox operations as private, permission-gated native MCP tools", () => {
 	const plugin = createPlugin();
-	expect(Object.keys(plugin.mcp?.tools ?? {})).toHaveLength(17);
+	expect(Object.keys(plugin.mcp?.tools ?? {})).toHaveLength(20);
 	for (const tool of Object.values(plugin.mcp!.tools)) {
 		const route = plugin.routes[tool.route];
 		expect(route.public).not.toBe(true);
 		expect(route.permission).toBe("plugins:manage");
 		expect(route.input).toBe(tool.input);
+	}
+	for (const name of ["deliveries/list", "deliveries/reconcile", "deliveries/resolve"]) {
+		expect(plugin.routes[name].public).not.toBe(true);
+		expect(plugin.routes[name].permission).toBe("plugins:manage");
 	}
 });
 
@@ -23,7 +28,48 @@ describe("EmDash native host", () => {
 		transport.send.mockReset().mockResolvedValue({ messageId: "<delivery-1@cloudflare.example>" });
 		host = await createNativeHost();
 	});
-	afterEach(async () => { await host?.close(); });
+	afterEach(async () => { vi.restoreAllMocks(); await host?.close(); });
+
+	async function deliverSystemEmail() {
+		const hooks = new HookPipeline(host.manager.getActivePlugins(), { db: host.db });
+		hooks.setExclusiveSelection("email:deliver", host.plugin.id);
+		return hooks.invokeExclusiveHook("email:deliver", {
+			message: { to: "recipient@example.com", subject: "System delivery", text: "System message body" },
+			source: "system",
+		});
+	}
+
+	it("does not report a core email hook failure after provider acceptance when sent projection fails", async () => {
+		const write = PluginStorageRepository.prototype.compareAndSet;
+		vi.spyOn(PluginStorageRepository.prototype, "compareAndSet").mockImplementation(async function (
+			this: PluginStorageRepository, ...args: Parameters<typeof write>
+		) {
+			if ((args[2] as any).status === "done") throw new Error("Sent projection unavailable");
+			return write.apply(this, args);
+		});
+		const delivered = await deliverSystemEmail();
+		expect(delivered?.error).toBeUndefined();
+		expect(delivered?.pluginId).toBe(host.plugin.id);
+		expect(transport.send).toHaveBeenCalledOnce();
+		expect((await host.messages.query({ where: { status: "outbox" } })).items).toHaveLength(1);
+		const journal = new PluginStorageRepository(host.db, host.plugin.id, "deliveries", ["state"]);
+		expect((await journal.query({})).items[0].data).toMatchObject({ state: "accepted", receipt: { messageId: "<delivery-1@cloudflare.example>" } });
+	});
+
+	it.each([
+		{ code: "E_VALIDATION_ERROR", state: "failed", status: "draft" },
+		{ code: undefined, state: "uncertain", status: "outbox" },
+	])("reports $state through the core email hook without claiming successful delivery", async ({ code, state, status }) => {
+		transport.send.mockRejectedValueOnce(Object.assign(new Error("Provider response unavailable"), code ? { code } : {}));
+		const delivered = await deliverSystemEmail();
+		expect(delivered?.pluginId).toBe(host.plugin.id);
+		expect(delivered?.error).toBeInstanceOf(Error);
+		expect(delivered?.error?.message).toMatch(/rejected|Outbox review/i);
+		expect(transport.send).toHaveBeenCalledOnce();
+		expect((await host.messages.query({ where: { status } })).items).toHaveLength(1);
+		const journal = new PluginStorageRepository(host.db, host.plugin.id, "deliveries", ["state"]);
+		expect((await journal.query({})).items[0].data).toMatchObject({ state });
+	});
 
 	it("joins a recipient's reply to the outbound conversation using its delivered Message-ID", async () => {
 		const sent = await host.request("messages/compose", { to: "recipient@example.com", subject: "Roundtrip", text: "Hello" });
