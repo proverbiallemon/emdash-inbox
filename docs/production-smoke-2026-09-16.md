@@ -88,3 +88,10 @@ The code is on `feature/emdash-038-reliability`; this is a deployed development 
 Final review found and fixed two additional issues. Thread actions now refresh messages without unmounting an open reply, preserving unsaved edits and delivery retry state; refresh/action errors display inline. Mutations of historical messages now derive their ancestry before marking them migrated, so snooze wake and pin actions during an unfinished backfill preserve conversation membership.
 
 Six DOM regression cases and two native SQLite cases failed before these fixes and passed afterward. The full run passed **440 tests / 33 files**, TypeScript checks, and native package validation. The 08:53 deployment evidence above predates these two fixes.
+
+### Reviewed build deployment (09:21 UTC)
+
+- Deployed both fixes to Worker version `198e1ab4-63db-4702-9720-5b1e0eaf6a2f`. The host pins `emdash-inbox-0.10.0-pr8-7f91221.tgz`, SHA-256 `a9f23a75c46b340eee287ab19ac910c98c364a7a0af5544381041c5c8d896a6b`.
+- Installed source and bundles match reviewed commit `7f91221`. Host build and Wrangler dry-run passed. Nine public routes returned HTTP 200, and anonymous delivery-list access returned HTTP 401. All 38 monitored host source/public files remained unchanged.
+- In the deployed admin, an unsaved reply retained its edited subject and body through pin and unpin refreshes. The synthetic thread's original unpinned state was restored, and the unsent reply was closed without saving. No additional mail or test token was created.
+- The 120-message SQLite mutation test exceeded Vitest's default five-second timeout on one GitHub runner. Its timeout is now 15 seconds; all assertions and the full workload remain intact.

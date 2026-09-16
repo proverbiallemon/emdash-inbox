@@ -97,7 +97,8 @@ describe("complete mailbox operations against EmDash SQLite", () => {
 		const page = await readyPage({ status: "done" });
 		expect(page.items).toHaveLength(1);
 		expect(page.items[0]).toMatchObject({ messageCount: 120, unreadCount: 0, pinned: true });
-	});
+		// Hundreds of real SQLite writes can exceed the default 5s on CI disks.
+	}, 15_000);
 
 	it("resumes substring search exactly after a partially inspected page", async () => {
 		for (let i = 0; i < 120; i++) await host.messages.put(`m${i}`, message(i, { bodyText: i % 2 ? "Needle in a body" : "Other text" }));
