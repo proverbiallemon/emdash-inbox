@@ -1,14 +1,15 @@
 import type { MessageDoc } from "../index";
 import { normalizeRecipients, deriveReplyAll } from "./recipients";
 import { replyDefaults, plainTextToHtml } from "./replyDefaults";
-import { isDraftRow } from "./threadSummary";
+import { allRows, loadThreadRows } from "./mailboxStore";
+import { cleanupAttachments, prepareOutgoingAttachments, validateOutgoingSize, type StoredAttachment } from "./attachments";
 
 /**
  * Shared compose/draft operations. Both the messages/* HTTP routes and the
  * MCP tool handlers call these — the routing layer only translates
  * transport-specific input/output shapes and error types; all decisions
  * (recipient math, subject defaulting, quote-body assembly, draft upsert
- * rules, the "delete-then-deliver-then-restore-on-failure" send sequence)
+ * rules, the "claim-then-deliver-then-restore-on-failure" send sequence)
  * live here exactly once.
  *
  * `ctx` is the same duck-typed plugin/route context every other handler in
@@ -17,10 +18,8 @@ import { isDraftRow } from "./threadSummary";
  * (src/index.ts owns `deliverEmail` and supplies it here) and unit-testable
  * in isolation by handing in a stub.
  *
- * No vitest coverage for the functions below (project convention for thin
- * storage wrappers — see the header comment in `inboxMcpHandlers.ts`). Every
- * pure decision they make is required to live in a tested pure module
- * instead: `recipients.ts`, `replyDefaults.ts`, `draftSummary.ts`.
+ * Draft storage races and body consistency are covered in `composeOps.test.ts`;
+ * recipient and reply decisions are also tested in their pure modules.
  */
 
 export interface ComposeInput {
@@ -65,6 +64,7 @@ export type Deliver = (
 			text: string;
 			html?: string;
 			inReplyTo?: string;
+			attachments?: StoredAttachment[];
 		};
 		source: string;
 	},
@@ -92,21 +92,6 @@ function normalizeOrThrow(input: string | string[] | undefined): string[] {
 	return result.value;
 }
 
-/**
- * Thread rows ordered oldest-first, same query shape used across the codebase.
- * Excludes unsent drafts saved onto the thread — they're not real messages and
- * must never be picked as a reply-anchor or inReplyTo source.
- */
-async function loadThreadRows(ctx: any, threadId: string): Promise<{ id: string; data: MessageDoc }[]> {
-	const result = await (ctx as any).storage.messages.query({
-		where: { threadId },
-		orderBy: { receivedAt: "asc" },
-		limit: 500,
-	});
-	const rows = (result.items ?? []) as { id: string; data: MessageDoc }[];
-	return rows.filter((r) => !isDraftRow(r));
-}
-
 export async function composeSend(
 	ctx: any,
 	deliver: Deliver,
@@ -124,6 +109,7 @@ export async function composeSend(
 	}
 	const text = input.text;
 	const html = input.html ?? plainTextToHtml(text);
+	validateOutgoingSize([], text, html);
 
 	const result = await deliver(ctx, {
 		message: { to: to[0], toAll: to, cc, bcc, subject, text, html },
@@ -161,8 +147,10 @@ export async function replySend(
 		from: latest.from,
 		to: latest.to,
 		subject: latest.subject,
-		bodyText: latest.bodyText,
-		bodyHtml: latest.bodyHtml,
+		bodyText: latest.bodyText || (latest.bodyHtml ? "[Original HTML message omitted from this quote.]" : ""),
+		// Workers have no browser DOM for DOMPurify. Server-generated quotes use
+		// escaped text; the admin editor can still supply its sanitized rich HTML.
+		bodyHtml: null,
 		receivedAt: latest.receivedAt,
 	});
 
@@ -196,6 +184,7 @@ export async function replySend(
 		input.html !== undefined
 			? input.html
 			: plainTextToHtml(input.text) + (input.quoteOriginal !== false ? defaults.quoteHtml : "");
+	validateOutgoingSize([], input.text, html);
 
 	const result = await deliver(ctx, {
 		message: {
@@ -224,10 +213,14 @@ export async function draftSave(ctx: any, input: DraftInput): Promise<{ draftId:
 	const bcc = normalizeOrThrow(input.bcc);
 
 	if (input.draftId) {
-		const existing = (await messages.get(input.draftId)) as MessageDoc | null;
-		if (!existing || existing.status !== "draft") {
+		const current = (await messages.getVersioned(input.draftId)) as {
+			value: MessageDoc;
+			revision: string;
+		} | null;
+		if (!current || current.value.status !== "draft") {
 			throw new NotFoundError(`draft ${input.draftId} not found`);
 		}
+		const existing = current.value;
 		const next: MessageDoc = {
 			...existing,
 			...(input.to !== undefined ? { to: to[0] ?? "", toAll: to } : {}),
@@ -235,7 +228,9 @@ export async function draftSave(ctx: any, input: DraftInput): Promise<{ draftId:
 			...(input.bcc !== undefined ? { bcc } : {}),
 			...(input.subject !== undefined ? { subject: input.subject } : {}),
 			...(input.text !== undefined ? { bodyText: input.text } : {}),
-			...(input.html !== undefined ? { bodyHtml: input.html } : {}),
+			bodyHtml:
+				input.html ??
+				(input.text !== undefined && input.text !== existing.bodyText ? null : existing.bodyHtml),
 			sortAt: now,
 		};
 		if (input.threadId !== undefined) {
@@ -247,7 +242,11 @@ export async function draftSave(ctx: any, input: DraftInput): Promise<{ draftId:
 			// pointed at whatever the draft was previously threaded under.
 			next.inReplyTo = threadLatest ? threadLatest.messageId : null;
 		}
-		await messages.put(input.draftId, next);
+		validateOutgoingSize(next.attachments ?? [], next.bodyText, next.bodyHtml ?? "");
+		const saved = await messages.compareAndSet(input.draftId, current.revision, next);
+		if (!saved.applied) {
+			throw new ComposeError(`draft ${input.draftId} changed or was removed; reload before saving`);
+		}
 		return { draftId: input.draftId };
 	}
 
@@ -282,6 +281,7 @@ export async function draftSave(ctx: any, input: DraftInput): Promise<{ draftId:
 		const threadLatest = threadRows[threadRows.length - 1]?.data ?? null;
 		if (threadLatest) doc.inReplyTo = threadLatest.messageId;
 	}
+	validateOutgoingSize([], doc.bodyText, doc.bodyHtml ?? "");
 
 	await messages.put(draftId, doc);
 	return { draftId };
@@ -293,10 +293,14 @@ export async function draftSend(
 	input: { draftId: string; edits?: Partial<ComposeInput> },
 ): Promise<{ id: string | null; threadId: string | null }> {
 	const messages = (ctx as any).storage.messages;
-	const draft = (await messages.get(input.draftId)) as MessageDoc | null;
-	if (!draft || draft.status !== "draft") {
+	const current = (await messages.getVersioned(input.draftId)) as {
+		value: MessageDoc;
+		revision: string;
+	} | null;
+	if (!current || current.value.status !== "draft") {
 		throw new NotFoundError(`draft ${input.draftId} not found`);
 	}
+	const draft = current.value;
 
 	const edits = input.edits ?? {};
 	const to = normalizeOrThrow(edits.to !== undefined ? edits.to : (draft.toAll ?? draft.to));
@@ -308,11 +312,18 @@ export async function draftSend(
 	if (!subject) throw new ComposeError("subject: required non-empty string");
 	const text = edits.text !== undefined ? edits.text : draft.bodyText;
 	if (!text || text.trim() === "") throw new ComposeError("text: required non-empty string");
-	const html = (edits.html !== undefined ? edits.html : draft.bodyHtml) ?? plainTextToHtml(text);
+	const html = edits.html ?? (text === draft.bodyText ? draft.bodyHtml : null) ?? plainTextToHtml(text);
+	// Resolve and verify all bytes before claiming a draft. A missing object or
+	// oversized body must never consume the draft or reach mail transport.
+	await prepareOutgoingAttachments(ctx, draft.attachments ?? [], text, html);
 
-	// Delete first so a resend never leaves a duplicate; restore on any
-	// delivery failure so the user's text is never destroyed by a failed send.
-	await messages.delete(input.draftId);
+	// Only the request holding this revision may claim the draft for delivery.
+	// This prevents concurrent sends, but cannot guarantee exactly-once delivery
+	// across process crashes or ambiguous transport failures.
+	const claimed = await messages.compareAndDelete(input.draftId, current.revision);
+	if (!claimed.applied) {
+		throw new ComposeError(`draft ${input.draftId} changed or was removed; reload before sending`);
+	}
 	try {
 		const result = await deliver(ctx, {
 			message: {
@@ -324,6 +335,7 @@ export async function draftSend(
 				text,
 				html,
 				...(draft.inReplyTo ? { inReplyTo: draft.inReplyTo } : {}),
+				...(draft.attachments?.length ? { attachments: draft.attachments } : {}),
 			},
 			// Mirrors composeSend/replySend's source convention — a draft that
 			// was threaded off another message sends as a reply, otherwise as
@@ -333,24 +345,41 @@ export async function draftSend(
 		});
 		return { id: result?.id ?? null, threadId: result?.threadId ?? null };
 	} catch (err) {
-		await messages.put(input.draftId, draft);
+		// Preserve the actual send edits without overwriting any replacement row.
+		await messages.compareAndSet(input.draftId, null, {
+			...draft,
+			to: to[0],
+			toAll: to,
+			cc,
+			bcc,
+			subject,
+			bodyText: text,
+			bodyHtml: html,
+			sortAt: new Date().toISOString(),
+		});
 		throw err;
 	}
 }
 
 export async function draftDiscard(ctx: any, input: { draftId: string }): Promise<{ ok: true }> {
 	const messages = (ctx as any).storage.messages;
-	const draft = (await messages.get(input.draftId)) as MessageDoc | null;
-	if (!draft || draft.status !== "draft") {
+	const current = (await messages.getVersioned(input.draftId)) as {
+		value: MessageDoc;
+		revision: string;
+	} | null;
+	if (!current || current.value.status !== "draft") {
 		throw new NotFoundError(`draft ${input.draftId} not found`);
 	}
-	await messages.delete(input.draftId);
+	const discarded = await messages.compareAndDelete(input.draftId, current.revision);
+	if (!discarded.applied) {
+		throw new ComposeError(`draft ${input.draftId} changed or was removed; reload before discarding`);
+	}
+	await cleanupAttachments(ctx, current.value.attachments ?? []);
 	return { ok: true };
 }
 
 export async function listDrafts(ctx: any): Promise<DraftRow[]> {
 	const messages = (ctx as any).storage.messages;
-	const result = await messages.query({ where: { status: "draft" }, limit: 10000 });
-	const rows = (result.items ?? []) as DraftRow[];
+	const rows = await allRows<MessageDoc>(messages, { where: { status: "draft" } });
 	return [...rows].sort((a, b) => (a.data.sortAt < b.data.sortAt ? 1 : a.data.sortAt > b.data.sortAt ? -1 : 0));
 }

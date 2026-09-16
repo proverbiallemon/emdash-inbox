@@ -3,6 +3,7 @@ import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 import { FilterTabs, type StatusFilter, type TabId } from "./components/FilterTabs";
 import { ThreadCard } from "./components/ThreadCard";
+import { PageSession } from "./lib/pageSession";
 import type { ThreadSummary } from "./lib/threadSummary";
 import { SnoozePicker } from "./components/SnoozePicker";
 import { DateBuckets } from "./components/DateBuckets";
@@ -47,6 +48,9 @@ function InboxPage() {
 	const [status, setStatus] = React.useState<TabId>(readStatusFromUrl);
 	const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(readMessageFromUrl);
 	const [composeId, setComposeId] = React.useState<string | null>(readComposeFromUrl);
+	const viewId = `${status}|${selectedMessageId ?? ""}|${composeId ?? ""}`;
+	const viewRef = React.useRef(viewId);
+	viewRef.current = viewId;
 	const [rows, setRows] = React.useState<ThreadSummary[]>([]);
 	const [drafts, setDrafts] = React.useState<DraftListItem[]>([]);
 	const [loading, setLoading] = React.useState(true);
@@ -54,31 +58,50 @@ function InboxPage() {
 	const [snoozingThread, setSnoozingThread] = React.useState<ThreadSummary | null>(null);
 	const [busyThreadIds, setBusyThreadIds] = React.useState<Set<string>>(new Set());
 	const debug = React.useMemo(readDebugFromUrl, []);
+	const pages = React.useRef(new PageSession<ThreadSummary>());
+	const pageGeneration = React.useRef(0);
+	const [cursor, setCursor] = React.useState<string | undefined>();
+	const [hasMore, setHasMore] = React.useState(false);
+	const [loadingMore, setLoadingMore] = React.useState(false);
+	const [indexing, setIndexing] = React.useState(false);
 
-	const refetch = React.useCallback(async (forStatus: StatusFilter) => {
-		setLoading(true);
+	const refetch = React.useCallback(async (forStatus: StatusFilter, nextCursor?: string, append = false) => {
+		const generation = append ? pageGeneration.current : (pageGeneration.current = pages.current.reset());
+		if (append) setLoadingMore(true); else { setLoading(true); setRows([]); setHasMore(false); }
 		setError(null);
+		setIndexing(false);
 		try {
-			const res = await apiFetch(`${API}/messages/list`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ status: forStatus }),
-			});
-			const data = await parseApiResponse<{ items: ThreadSummary[] }>(
-				res,
-				"Failed to load messages",
-			);
-			setRows(data.items);
+			for (let attempt = 0; attempt < 20; attempt++) {
+				const res = await apiFetch(`${API}/threads/list`, {
+					method: "POST", headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ status: forStatus, limit: 25, cursor: nextCursor }),
+				});
+				const data = await parseApiResponse<{ items: ThreadSummary[]; cursor?: string; hasMore: boolean; indexing?: boolean }>(res, "Failed to load messages");
+				if (!pages.current.current(generation)) return;
+				setIndexing(Boolean(data.indexing));
+				if (data.indexing) {
+					if (attempt === 19) throw new Error("Mailbox indexing is still in progress. Use Refresh to continue.");
+					await new Promise(resolve => setTimeout(resolve, 350));
+					if (!pages.current.current(generation)) return;
+					continue;
+				}
+				const items = pages.current.accept(generation, data.items, append);
+				if (items) setRows(items);
+				setCursor(data.cursor); setHasMore(data.hasMore);
+				break;
+			}
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			if (pages.current.current(generation)) setError(err instanceof Error ? err.message : String(err));
 		} finally {
-			setLoading(false);
+			if (pages.current.current(generation)) { setLoading(false); setLoadingMore(false); }
 		}
 	}, []);
 
 	const refetchDrafts = React.useCallback(async () => {
+		const generation = pageGeneration.current = pages.current.reset();
 		setLoading(true);
 		setError(null);
+		setIndexing(false);
 		try {
 			const res = await apiFetch(`${API}/messages/drafts`, {
 				method: "POST",
@@ -86,11 +109,11 @@ function InboxPage() {
 				body: "{}",
 			});
 			const data = await parseApiResponse<{ items: DraftListItem[] }>(res, "Failed to load drafts");
-			setDrafts(data.items);
+			if (pages.current.current(generation)) setDrafts(data.items);
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			if (pages.current.current(generation)) setError(err instanceof Error ? err.message : String(err));
 		} finally {
-			setLoading(false);
+			if (pages.current.current(generation)) setLoading(false);
 		}
 	}, []);
 
@@ -99,95 +122,29 @@ function InboxPage() {
 		if (!selectedMessageId && composeId === null) {
 			status === "drafts" ? void refetchDrafts() : void refetch(status);
 		}
+			return () => { pages.current.reset(); };
 	}, [status, selectedMessageId, composeId, refetch, refetchDrafts]);
 
 	const handleOpen = (openMessageId: string) => setSelectedMessageId(openMessageId);
 	const handleBack = () => setSelectedMessageId(null);
 
-	// Fan out a thread-scope action across summary.messageIds. Optimistic UI
-	// (apply transform immediately), then run the per-message API calls in
-	// parallel; revert just the thread on full failure.
-	const fanOut = React.useCallback(
-		async (
-			summary: ThreadSummary,
-			transform: (s: ThreadSummary) => ThreadSummary,
-			call: (messageId: string) => Promise<void>,
-		) => {
-			if (busyThreadIds.has(summary.id)) return;
-			setBusyThreadIds((s) => new Set(s).add(summary.id));
-			// Capture just this thread's pre-transform snapshot. Reverting via
-			// functional setState lets concurrent fanOut runs against OTHER threads
-			// proceed without their optimistic state being clobbered.
-			const prevSummary = summary;
-			setRows((list) => list.map((r) => (r.id === summary.id ? transform(r) : r)));
-			try {
-				const results = await Promise.allSettled(summary.messageIds.map(call));
-				const failedCount = results.filter((r) => r.status === "rejected").length;
-				if (failedCount > 0 && failedCount === summary.messageIds.length) {
-					setRows((curr) => curr.map((r) => (r.id === summary.id ? prevSummary : r)));
-					setError(`Failed to update thread (${failedCount}/${summary.messageIds.length} messages).`);
-				} else if (failedCount > 0) {
-					setError(`Partial update: ${failedCount}/${summary.messageIds.length} messages failed.`);
-					// Refetch to resync the UI with the partially-updated DB state. This fan-out
-					// only runs from ThreadCard actions, which never render on the drafts tab —
-					// the guard keeps the type checker honest about that invariant.
-					if (status !== "drafts") void refetch(status);
-				}
-			} finally {
-				setBusyThreadIds((s) => {
-					const next = new Set(s);
-					next.delete(summary.id);
-					return next;
-				});
-			}
-		},
-		[busyThreadIds, refetch, status],
-	);
-
-	const handlePinToggle = (summary: ThreadSummary, next: boolean) =>
-		fanOut(
-			summary,
-			(s) => ({ ...s, pinned: next }),
-			async (id) => {
-				const res = await apiFetch(`${API}/messages/pin`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ id, pinned: next }),
-				});
-				if (!res.ok) throw new Error(`pin ${id} failed (${res.status})`);
-			},
-		);
-
-	const handleDone = (summary: ThreadSummary) =>
-		fanOut(
-			summary,
-			(s) => ({ ...s, latest: { ...s.latest, status: "done" } }),
-			async (id) => {
-				const res = await apiFetch(`${API}/messages/status`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ id, status: "done" }),
-				});
-				if (!res.ok) throw new Error(`status ${id} failed (${res.status})`);
-			},
-		);
-
-	const handleSnoozeConfirm = async (iso: string) => {
-		const summary = snoozingThread;
-		setSnoozingThread(null);
-		if (!summary) return;
-		await fanOut(
-			summary,
-			(s) => ({ ...s, latest: { ...s.latest, status: "snoozed", snoozeUntil: iso } }),
-			async (id) => {
-				const res = await apiFetch(`${API}/messages/status`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ id, status: "snoozed", snoozeUntil: iso }),
-				});
-				if (!res.ok) throw new Error(`snooze ${id} failed (${res.status})`);
-			},
-		);
+	const actOnThread = async (summary: ThreadSummary, action: Record<string, unknown>) => {
+		if (busyThreadIds.has(summary.id)) return;
+		const actionView = viewRef.current;
+		setBusyThreadIds(s => new Set(s).add(summary.id));
+		setError(null);
+		try {
+			const res = await apiFetch(`${API}/threads/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId: summary.threadId, ...action }) });
+			await parseApiResponse(res, "Failed to update thread");
+			if (status !== "drafts" && viewRef.current === actionView) await refetch(status);
+		} catch (err) { if (viewRef.current === actionView) setError(err instanceof Error ? err.message : String(err)); }
+		finally { setBusyThreadIds(s => { const next = new Set(s); next.delete(summary.id); return next; }); }
+	};
+	const handlePinToggle = (summary: ThreadSummary, pinned: boolean) => actOnThread(summary, { action: "pin", pinned });
+	const handleDone = (summary: ThreadSummary) => actOnThread(summary, { action: "status", status: "done" });
+	const handleSnoozeConfirm = async (snoozeUntil: string) => {
+		const summary = snoozingThread; setSnoozingThread(null);
+		if (summary) await actOnThread(summary, { action: "status", status: "snoozed", snoozeUntil });
 	};
 
 	if (composeId !== null) {
@@ -240,8 +197,12 @@ function InboxPage() {
 				</div>
 			</div>
 
-			<FilterTabs current={status} onChange={setStatus} />
+			<div className="flex items-center justify-between gap-3">
+				<FilterTabs current={status} onChange={setStatus} />
+				<button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={loading} onClick={() => status === "drafts" ? void refetchDrafts() : void refetch(status)}>Refresh</button>
+			</div>
 
+			{indexing && <p role="status" className="text-sm text-muted-foreground">Updating the mailbox index…</p>}
 			{error && (
 				<div className="p-3 rounded-lg border border-destructive/50 bg-destructive/5 text-sm text-destructive">
 					{error}
@@ -264,7 +225,7 @@ function InboxPage() {
 				)
 			) : loading ? (
 				<SkeletonList />
-			) : rows.length === 0 ? (
+			) : rows.length === 0 && !error && !indexing ? (
 				<EmptyState status={status} />
 			) : (
 				<div className="relative">
@@ -284,6 +245,7 @@ function InboxPage() {
 							/>
 						)}
 					/>
+					{hasMore && <button type="button" disabled={loadingMore} className="mt-4 rounded border px-4 py-2 text-sm disabled:opacity-50" onClick={() => void refetch(status, cursor, true)}>{loadingMore ? "Loading…" : "Load more conversations"}</button>}
 					{snoozingThread && (
 						<SnoozePicker
 							debug={debug}
@@ -298,6 +260,6 @@ function InboxPage() {
 }
 
 export const pages: PluginAdminExports["pages"] = {
-	"/": InboxPage as unknown as PluginAdminExports["pages"][string],
-	"/settings": SettingsPage as unknown as PluginAdminExports["pages"][string],
+	"/": InboxPage,
+	"/settings": SettingsPage,
 };

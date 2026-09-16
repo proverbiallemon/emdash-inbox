@@ -1,47 +1,63 @@
-// Host-side MCP proxy for emdash-inbox. Copy to src/pages/api/inbox-mcp.ts
-// in your EmDash site.
+// Optional legacy MCP proxy. Prefer EmDash's native /_emdash/api/mcp
+// endpoint with the plugin's MCP tools enabled in Admin → Extensions.
+// To retain this proxy, copy it to src/pages/api/inbox-mcp.ts in your site.
 //
-// Why this exists: EmDash wraps every plugin-route response in a
-// {"data": ...} envelope, which MCP clients can't parse. This route
-// forwards JSON-RPC requests to the plugin's messages/mcp route and
-// returns the unwrapped body. Remove it once EmDash supports raw
-// responses on plugin routes.
+// Plugin routes wrap responses in {"data": ...}. This route unwraps the
+// plugin's legacy messages/mcp responses for existing MCP clients.
 //
-// Auth: set EMDASH_INBOX_MCP_TOKEN to an EmDash API token with admin
-// scope (Admin → Settings → API Tokens). Anyone who can reach this
-// route with the token has full inbox access.
+// Every caller must send its own EmDash Bearer token. EmDash validates
+// that token's scope and permissions at the private plugin endpoint.
+// Remove the obsolete EMDASH_INBOX_MCP_TOKEN host secret.
 
 import type { APIRoute } from "astro";
 
 export const prerender = false;
 
 export const POST: APIRoute = async ({ request, url }) => {
-	const token = import.meta.env.EMDASH_INBOX_MCP_TOKEN;
-	if (!token) {
-		return Response.json(
-			{ jsonrpc: "2.0", id: null, error: { code: -32000, message: "EMDASH_INBOX_MCP_TOKEN not configured on the host" } },
-			{ status: 500 },
-		);
+	const bearer = /^Bearer +([A-Za-z0-9._~+\/-]+=*)$/i.exec(request.headers.get("Authorization") ?? "");
+	if (!bearer) {
+		return proxyError(401, "A Bearer token is required");
 	}
 
 	const upstream = new URL("/_emdash/api/plugins/emdash-inbox/messages/mcp", url.origin);
-	const res = await fetch(upstream, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			"Authorization": `Bearer ${token}`,
-			"X-EmDash-Request": "1",
-		},
-		body: await request.text(),
-	});
+	try {
+		const res = await fetch(upstream, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"Authorization": `Bearer ${bearer[1]}`,
+			},
+			body: await request.text(),
+			credentials: "omit",
+			cache: "no-store",
+			// Keep credentials on this endpoint; redirects must not select a different route.
+			redirect: "error",
+		});
 
-	const body = (await res.json().catch(() => null)) as { data?: unknown; error?: { message?: string } } | null;
-	if (!res.ok || !body || body.data === undefined) {
-		return Response.json(
-			{ jsonrpc: "2.0", id: null, error: { code: -32000, message: body?.error?.message ?? `upstream error (${res.status})` } },
-			{ status: 502 },
-		);
+		if (res.status === 401 || res.status === 403) {
+			return proxyError(res.status, res.status === 401 ? "Authentication required" : "Access denied");
+		}
+		if (!res.ok) {
+			return proxyError(502, "EmDash MCP request failed");
+		}
+
+		const body = (await res.json()) as { data?: unknown } | null;
+		if (!body || body.data === undefined) {
+			return proxyError(502, "Invalid EmDash MCP response");
+		}
+
+		return Response.json(body.data, { headers: { "Cache-Control": "private, no-store" } });
+	} catch {
+		// Upstream messages and fetch exceptions can contain sensitive details.
+		return proxyError(502, "EmDash MCP request failed");
 	}
-
-	return Response.json(body.data);
 };
+
+function proxyError(status: number, message: string): Response {
+	const headers: Record<string, string> = { "Cache-Control": "private, no-store" };
+	if (status === 401) headers["WWW-Authenticate"] = 'Bearer realm="emdash-inbox"';
+	return Response.json(
+		{ jsonrpc: "2.0", id: null, error: { code: -32000, message } },
+		{ status, headers },
+	);
+}

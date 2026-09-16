@@ -9,3 +9,9 @@ is noted in comments.
 
 This product is designed to run as a plugin for EmDash CMS
 (https://github.com/emdash-cms/emdash).
+
+This product bundles postal-mime 2.7.4 by Andris Reinman, with a local
+attachment byte-preservation patch, under the MIT-0 license.
+Upstream: https://github.com/postalsys/postal-mime
+The original license is included in vendor/postal-mime-LICENSE.txt.
+Patch and generation provenance are documented in docs/mime-parser.md.

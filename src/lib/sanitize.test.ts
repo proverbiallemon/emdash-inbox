@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeEmailHtml, sanitizeComposeHtml } from "./sanitize";
+import { prepareEmailHtml, sanitizeEmailHtml, sanitizeComposeHtml } from "./sanitize";
 
 describe("sanitizeEmailHtml", () => {
 	const blocked = { allowExternalImages: false };
@@ -25,6 +25,70 @@ describe("sanitizeEmailHtml", () => {
 	it("keeps external image src when images are allowed", () => {
 		const out = sanitizeEmailHtml('<img src="https://example.com/logo.png">', allowed);
 		expect(out).toMatch(/example\.com\/logo\.png/);
+	});
+
+	it.each([
+		'<img srcset="https://tracker.example/pixel.png 1x, //tracker.example/pixel@2x.png 2x">',
+		'<picture><source srcset="https://tracker.example/pixel.png"><img alt="logo"></picture>',
+		'<svg><image href="https://tracker.example/pixel.png" /></svg>',
+		'<svg><image xlink:href="https://tracker.example/pixel.png" /></svg>',
+		'<table background="https://tracker.example/pixel.png"><tr><td>hello</td></tr></table>',
+		'<video poster="https://tracker.example/pixel.png"><source src="https://tracker.example/movie"></video>',
+		'<audio src="https://tracker.example/audio" autoplay></audio>',
+		'<iframe src="https://tracker.example/frame"></iframe><object data="https://tracker.example/object"></object>',
+		'<link rel="stylesheet" href="https://tracker.example/style.css"><link rel="preload" href="https://tracker.example/font">',
+	])("removes automatic resource loading outside img src: %s", (html) => {
+		for (const options of [blocked, allowed]) {
+			const out = sanitizeEmailHtml(html, options);
+			expect(out).not.toContain("tracker.example");
+			expect(out).not.toMatch(/<(?:svg|image|source|video|audio|iframe|object|link)\b/i);
+		}
+	});
+
+	it.each([
+		'<p style="background-image: url(https://tracker.example/pixel)">hello</p>',
+		String.raw`<p style="background: u\72l(https://tracker.example/pixel)">hello</p>`,
+		'<p>hello</p><style>@import "https://tracker.example/theme.css"; body { display: none }</style>',
+		String.raw`<p>hello</p><style>@\69mport "https://tracker.example/theme.css"; body { display: none }</style>`,
+	])("removes CSS loading and page-wide styling in both image modes: %s", (html) => {
+		for (const options of [blocked, allowed]) {
+			const out = sanitizeEmailHtml(html, options);
+			expect(out).not.toMatch(/<style\b|\sstyle=/i);
+			expect(out).not.toContain("tracker.example");
+			expect(out).toContain("hello");
+		}
+	});
+
+	it("removes classes and IDs that could activate admin page styles", () => {
+		const out = sanitizeEmailHtml('<div id="admin" class="fixed inset-0">hello</div>', blocked);
+		expect(out).not.toMatch(/\s(?:id|class)=/);
+		expect(out).toContain("hello");
+	});
+
+	it.each(["//tracker.example/pixel.png", "/pixel.png", "pixel.png", "https&#58;//tracker.example/pixel.png"])(
+		"requires opt-in for browser-resolved image URL %s", (src) => {
+			const html = `<img src="${src}" alt="logo">`;
+			expect(sanitizeEmailHtml(html, blocked)).not.toMatch(/\ssrc=/);
+			expect(sanitizeEmailHtml(html, allowed)).toMatch(/\ssrc=/);
+		},
+	);
+
+	it.each([
+		"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E",
+		"data:text/html;base64,PHNjcmlwdD4=",
+		"data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+	])("does not allow active or non-raster inline image payloads: %s", (src) => {
+		for (const options of [blocked, allowed]) {
+			expect(sanitizeEmailHtml(`<img src="${src}">`, options)).not.toMatch(/\ssrc=/);
+		}
+	});
+
+	it("preserves table structure and safe formatting attributes", () => {
+		const html = '<table cellpadding="4" cellspacing="0"><tbody><tr><td colspan="2" align="center"><strong>Receipt</strong></td></tr></tbody></table>';
+		const out = sanitizeEmailHtml(html, blocked);
+		expect(out).toContain('<table cellpadding="4" cellspacing="0">');
+		expect(out).toContain('<td colspan="2" align="center">');
+		expect(out).toContain("<strong>Receipt</strong>");
 	});
 
 	it("always preserves data: URI images", () => {
@@ -56,6 +120,38 @@ describe("sanitizeEmailHtml", () => {
 		expect(out).toContain("<em>");
 		expect(out).toContain("<ul>");
 		expect(out).toContain("<li>");
+	});
+});
+
+describe("prepareEmailHtml image-reveal metadata", () => {
+	it.each([
+		"https://tracker.example/pixel.png",
+		"//tracker.example/pixel.png",
+		"/pixel.png",
+		"pixel.png",
+		"https&#58;//tracker.example/pixel.png",
+	])("offers image reveal for a sanitized external src: %s", (src) => {
+		const raw = `<img src="${src}" alt="logo">`;
+		const hidden = prepareEmailHtml(raw, { allowExternalImages: false });
+		const visible = prepareEmailHtml(raw, { allowExternalImages: true });
+		expect(hidden.hasExternalImages).toBe(true);
+		expect(hidden.html).not.toMatch(/\ssrc=/);
+		expect(visible.hasExternalImages).toBe(true);
+		expect(visible.html).toMatch(/\ssrc=/);
+	});
+
+	it.each([
+		'<img src="cid:inline-logo">',
+		'<img src="data:image/png;base64,iVBORw0KGgo=">',
+		'<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">',
+		'<img src="javascript:alert(1)">',
+		'<img srcset="https://tracker.example/pixel.png 2x">',
+		'<img data-src="https://tracker.example/pixel.png">',
+		'<!-- <img src="https://tracker.example/pixel.png"> -->',
+		'<div title=\'<img src="https://tracker.example/pixel.png">\'>hello</div>',
+		'<svg><image href="https://tracker.example/pixel.png" /></svg>',
+	])("does not offer reveal when there is no supported external image: %s", (raw) => {
+		expect(prepareEmailHtml(raw, { allowExternalImages: false }).hasExternalImages).toBe(false);
 	});
 });
 

@@ -9,6 +9,16 @@
  * use later (attachments, replyTo), expand this type rather than relaxing
  * to Record<string, unknown>.
  */
+export interface EmailAttachment {
+	// Keep this narrower than the provider union: attachment content is always
+	// the original bytes, never a base64 string requiring implicit decoding.
+	content: ArrayBuffer;
+	filename: string;
+	type: string;
+	disposition: "attachment" | "inline";
+	contentId?: string;
+}
+
 export interface EmailBinding {
 	send(payload: {
 		to: string | string[];
@@ -19,6 +29,7 @@ export interface EmailBinding {
 		cc?: string[];
 		bcc?: string[];
 		headers?: Record<string, string>;
+		attachments?: EmailAttachment[];
 	}): Promise<{ messageId?: string }>;
 }
 

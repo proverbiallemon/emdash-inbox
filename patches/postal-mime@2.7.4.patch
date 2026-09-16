@@ -1,0 +1,345 @@
+diff --git a/src/mime-node.js b/src/mime-node.js
+index b4748dca9980b175418d2ee5a82d7df8aa599279..5fe4e0b047326b3c024fdd2780194850bc286f49 100644
+--- a/src/mime-node.js
++++ b/src/mime-node.js
+@@ -52,19 +52,20 @@ export default class MimeNode {
+         this.headers = [];
+ 
+         this.contentDecoder = false;
++        this.pendingBodyLine = null;
+     }
+ 
+     setupContentDecoder(transferEncoding) {
+         if (/base64/i.test(transferEncoding)) {
+             this.contentDecoder = new Base64Decoder();
+         } else if (/quoted-printable/i.test(transferEncoding)) {
+-            this.contentDecoder = new QPDecoder({ decoder: getDecoder(this.contentType.parsed.params.charset) });
++            this.contentDecoder = new QPDecoder();
+         } else {
+             this.contentDecoder = new PassThroughDecoder();
+         }
+     }
+ 
+-    async finalize() {
++    async finalize(atBoundary = false) {
+         if (this.state === 'finished') {
+             return;
+         }
+@@ -83,16 +84,24 @@ export default class MimeNode {
+             }
+         }
+ 
+-        await this.finalizeChildNodes();
++        await this.finalizeChildNodes(atBoundary);
++
++        if (this.pendingBodyLine) {
++            const { line, lineEnding } = this.pendingBodyLine;
++            // RFC 2046 section 5.1.1: only the line break immediately before
++            // a multipart boundary belongs to the delimiter, not the body.
++            this.contentDecoder.update(line, atBoundary ? new Uint8Array(0) : lineEnding);
++            this.pendingBodyLine = null;
++        }
+ 
+         this.content = this.contentDecoder ? await this.contentDecoder.finalize() : null;
+ 
+         this.state = 'finished';
+     }
+ 
+-    async finalizeChildNodes() {
++    async finalizeChildNodes(atBoundary = false) {
+         for (let childNode of this.childNodes) {
+-            await childNode.finalize();
++            await childNode.finalize(atBoundary);
+         }
+     }
+ 
+@@ -347,7 +356,7 @@ export default class MimeNode {
+         this.setupContentDecoder(this.contentTransferEncoding.encoding);
+     }
+ 
+-    feed(line) {
++    feed(line, lineEnding = new Uint8Array(0)) {
+         switch (this.state) {
+             case 'header':
+                 if (!line.length) {
+@@ -365,8 +374,12 @@ export default class MimeNode {
+                 this.headerLines.push(defaultDecoder.decode(line));
+                 break;
+             case 'body': {
+-                // add line to body
+-                this.contentDecoder.update(line);
++                // Keep one line pending until the next line establishes
++                // whether its terminator is content or a boundary separator.
++                if (this.pendingBodyLine) {
++                    this.contentDecoder.update(this.pendingBodyLine.line, this.pendingBodyLine.lineEnding);
++                }
++                this.pendingBodyLine = { line, lineEnding };
+             }
+         }
+     }
+diff --git a/src/pass-through-decoder.js b/src/pass-through-decoder.js
+index ad1c2229fa5b1cf0315719368bb87c3e268f865a..967705e07fe4d92e82a0466171ef61f1edf8b013 100644
+--- a/src/pass-through-decoder.js
++++ b/src/pass-through-decoder.js
+@@ -5,9 +5,9 @@ export default class PassThroughDecoder {
+         this.chunks = [];
+     }
+ 
+-    update(line) {
++    update(line, lineEnding = new Uint8Array(0)) {
+         this.chunks.push(line);
+-        this.chunks.push('\n');
++        this.chunks.push(lineEnding);
+     }
+ 
+     finalize() {
+diff --git a/src/postal-mime.js b/src/postal-mime.js
+index db756ac9ae9682da93e3d7772c62ebe4e49de0e1..f450383e5979b55c84313d954c6aab848b52a1a7 100644
+--- a/src/postal-mime.js
++++ b/src/postal-mime.js
+@@ -50,7 +50,7 @@ export default class PostalMime {
+         await this.root.finalize();
+     }
+ 
+-    async processLine(line, isFinal) {
++    async processLine(line, isFinal, lineEnding) {
+         let boundaries = this.boundaries;
+ 
+         // check if this is a mime boundary
+@@ -102,12 +102,12 @@ export default class PostalMime {
+                 }
+ 
+                 if (isTerminator) {
+-                    await boundary.node.finalize();
++                    await boundary.node.finalize(true);
+ 
+                     this.currentNode = boundary.node.parentNode || this.root;
+                 } else {
+                     // finalize any open child nodes (should be just one though)
+-                    await boundary.node.finalizeChildNodes();
++                    await boundary.node.finalizeChildNodes(true);
+ 
+                     this.currentNode = new MimeNode({
+                         postalMime: this,
+@@ -125,7 +125,7 @@ export default class PostalMime {
+             }
+         }
+ 
+-        this.currentNode.feed(line);
++        this.currentNode.feed(line, lineEnding);
+ 
+         if (isFinal) {
+             return this.finalize();
+@@ -134,25 +134,24 @@ export default class PostalMime {
+ 
+     readLine() {
+         let startPos = this.readPos;
+-        let endPos = this.readPos;
+-
+         while (this.readPos < this.av.length) {
+             const c = this.av[this.readPos++];
+-
+-            if (c !== 0x0d && c !== 0x0a) {
+-                endPos = this.readPos;
+-            }
+-
+             if (c === 0x0a) {
++                // Separate only this LF (and its optional immediately preceding
++                // CR). Other CR bytes are content and must survive decoding.
++                let endPos = this.readPos - 1;
++                if (endPos > startPos && this.av[endPos - 1] === 0x0d) endPos--;
+                 return {
+                     bytes: new Uint8Array(this.buf, startPos, endPos - startPos),
++                    lineEnding: new Uint8Array(this.buf, endPos, this.readPos - endPos),
+                     done: this.readPos >= this.av.length
+                 };
+             }
+         }
+ 
+         return {
+-            bytes: new Uint8Array(this.buf, startPos, endPos - startPos),
++            bytes: new Uint8Array(this.buf, startPos, this.readPos - startPos),
++            lineEnding: new Uint8Array(0),
+             done: this.readPos >= this.av.length
+         };
+     }
+@@ -257,9 +256,9 @@ export default class PostalMime {
+                                     .trim();
+                             }
+ 
+-                            // Enforce into unicode
+-                            const decodedText = node.getTextContent().replace(/\r?\n/g, '\n').replace(/\n*$/, '\n');
+-                            attachment.content = textEncoder.encode(decodedText);
++                            // Calendar downloads retain their original charset
++                            // and line endings just like every other attachment.
++                            attachment.content = node.content;
+                             break;
+                         }
+ 
+@@ -472,7 +471,7 @@ export default class PostalMime {
+         while (this.readPos < this.av.length) {
+             const line = this.readLine();
+ 
+-            await this.processLine(line.bytes, line.done);
++            await this.processLine(line.bytes, line.done, line.lineEnding);
+         }
+ 
+         await this.processNodeTree();
+diff --git a/src/qp-decoder.js b/src/qp-decoder.js
+index 9895c669e915281122e42e78808867e028ffdf25..7d4a471b7a4ebcba6d4ac8fdc46e0c06d43db0de 100644
+--- a/src/qp-decoder.js
++++ b/src/qp-decoder.js
+@@ -1,122 +1,48 @@
+ import { blobToArrayBuffer } from './decode-strings.js';
+ 
+-// Regex patterns compiled once for performance
+-const VALID_QP_REGEX = /^=[a-f0-9]{2}$/i;
+-const QP_SPLIT_REGEX = /(?==[a-f0-9]{2})/i;
+-const SOFT_LINE_BREAK_REGEX = /=\r?\n/g;
+-const PARTIAL_QP_ENDING_REGEX = /=[a-fA-F0-9]?$/;
++function hexValue(byte) {
++    if (byte >= 0x30 && byte <= 0x39) return byte - 0x30;
++    if (byte >= 0x41 && byte <= 0x46) return byte - 0x41 + 10;
++    if (byte >= 0x61 && byte <= 0x66) return byte - 0x61 + 10;
++    return -1;
++}
+ 
+ export default class QPDecoder {
+-    constructor(opts) {
+-        opts = opts || {};
+-
+-        this.decoder = opts.decoder || new TextDecoder();
+-
+-        this.maxChunkSize = 100 * 1024;
+-
+-        this.remainder = '';
+-
++    constructor() {
+         this.chunks = [];
+     }
+ 
+-    decodeQPBytes(encodedBytes) {
+-        let buf = new ArrayBuffer(encodedBytes.length);
+-        let dataView = new DataView(buf);
+-        for (let i = 0, len = encodedBytes.length; i < len; i++) {
+-            dataView.setUint8(i, parseInt(encodedBytes[i], 16));
+-        }
+-        return buf;
+-    }
+-
+-    decodeChunks(str) {
+-        // unwrap newlines
+-        str = str.replace(SOFT_LINE_BREAK_REGEX, '');
+-
+-        let list = str.split(QP_SPLIT_REGEX);
+-        let encodedBytes = [];
+-        for (let part of list) {
+-            if (part.charAt(0) !== '=') {
+-                if (encodedBytes.length) {
+-                    this.chunks.push(this.decodeQPBytes(encodedBytes));
+-                    encodedBytes = [];
+-                }
+-                this.chunks.push(part);
+-                continue;
+-            }
+-
+-            if (part.length === 3) {
+-                // Validate that this is actually a valid QP sequence
+-                if (VALID_QP_REGEX.test(part)) {
+-                    encodedBytes.push(part.substr(1));
+-                } else {
+-                    // Not a valid QP sequence, treat as literal text
+-                    if (encodedBytes.length) {
+-                        this.chunks.push(this.decodeQPBytes(encodedBytes));
+-                        encodedBytes = [];
+-                    }
+-                    this.chunks.push(part);
+-                }
+-                continue;
+-            }
+-
+-            if (part.length > 3) {
+-                // First 3 chars should be a valid QP sequence
+-                const firstThree = part.substr(0, 3);
+-                if (VALID_QP_REGEX.test(firstThree)) {
+-                    encodedBytes.push(part.substr(1, 2));
+-                    this.chunks.push(this.decodeQPBytes(encodedBytes));
+-                    encodedBytes = [];
+-
+-                    part = part.substr(3);
+-                    this.chunks.push(part);
+-                } else {
+-                    // Not a valid QP sequence, treat entire part as literal
+-                    if (encodedBytes.length) {
+-                        this.chunks.push(this.decodeQPBytes(encodedBytes));
+-                        encodedBytes = [];
+-                    }
+-                    this.chunks.push(part);
++    update(line, lineEnding = new Uint8Array(0)) {
++        // Transfer decoding yields bytes, not charset-decoded text. Text bodies
++        // are decoded separately by MimeNode.getTextContent().
++        // RFC 2045 section 6.7: unencoded trailing spaces/tabs are transport
++        // padding; significant whitespace is represented as =20 / =09.
++        let length = line.length;
++        while (length && (line[length - 1] === 0x20 || line[length - 1] === 0x09)) length--;
++        const softBreak = lineEnding.length > 0 && line[length - 1] === 0x3d;
++        if (softBreak) length--;
++        const output = new Uint8Array(length + (softBreak ? 0 : lineEnding.length));
++        let offset = 0;
++        for (let i = 0; i < length; i++) {
++            if (line[i] === 0x3d && i + 2 < length) {
++                const high = hexValue(line[i + 1]);
++                const low = hexValue(line[i + 2]);
++                if (high >= 0 && low >= 0) {
++                    output[offset++] = (high << 4) | low;
++                    i += 2;
++                    continue;
+                 }
+             }
++            output[offset++] = line[i];
+         }
+-        if (encodedBytes.length) {
+-            this.chunks.push(this.decodeQPBytes(encodedBytes));
+-        }
+-    }
+-
+-    update(buffer) {
+-        // expect full lines, so add line terminator as well
+-        let str = this.decoder.decode(buffer) + '\n';
+-
+-        str = this.remainder + str;
+-
+-        if (str.length < this.maxChunkSize) {
+-            this.remainder = str;
+-            return;
+-        }
+-
+-        this.remainder = '';
+-
+-        let partialEnding = str.match(PARTIAL_QP_ENDING_REGEX);
+-        if (partialEnding) {
+-            if (partialEnding.index === 0) {
+-                this.remainder = str;
+-                return;
+-            }
+-            this.remainder = str.substr(partialEnding.index);
+-            str = str.substr(0, partialEnding.index);
++        if (!softBreak) {
++            output.set(lineEnding, offset);
++            offset += lineEnding.length;
+         }
+-
+-        this.decodeChunks(str);
++        this.chunks.push(output.subarray(0, offset));
+     }
+ 
+     finalize() {
+-        if (this.remainder.length) {
+-            this.decodeChunks(this.remainder);
+-            this.remainder = '';
+-        }
+-
+-        // convert an array of arraybuffers into a blob and then back into a single arraybuffer
+         return blobToArrayBuffer(new Blob(this.chunks, { type: 'application/octet-stream' }));
+     }
+ }

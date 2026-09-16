@@ -5,6 +5,9 @@ describe("listInboxTools", () => {
 	it("exposes the full tool catalog by name, in order", () => {
 		const names = listInboxTools().map((t) => t.name);
 		expect(names).toEqual([
+			"add_draft_attachment",
+			"remove_draft_attachment",
+			"read_attachment",
 			"list_threads",
 			"get_thread",
 			"search_messages",
@@ -55,8 +58,8 @@ describe("listInboxTools", () => {
 describe("M8 compose/draft tools", () => {
 	const tool = (name: string) => listInboxTools().find((t) => t.name === name)!;
 
-	it("catalog has 14 tools", () => {
-		expect(listInboxTools()).toHaveLength(14);
+	it("catalog has 17 tools", () => {
+		expect(listInboxTools()).toHaveLength(17);
 	});
 
 	it("compose_email accepts string or array recipients", () => {

@@ -1,4 +1,5 @@
 import { defineConfig } from "tsdown";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig({
 	entry: {
@@ -8,13 +9,13 @@ export default defineConfig({
 	format: "esm",
 	dts: true,
 	outDir: "dist",
+	alias: { "postal-mime": fileURLToPath(new URL("./vendor/postal-mime.mjs", import.meta.url)) },
 	// Host provides these — don't bundle.
-	external: [
+	deps: { alwaysBundle: ["postal-mime"], neverBundle: [
 		"emdash",
 		"emdash/plugin-utils",
-		"postal-mime",
 		"react",
 		"react-dom",
 		"react/jsx-runtime",
-	],
+	] },
 });

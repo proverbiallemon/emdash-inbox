@@ -1,5 +1,5 @@
 import * as React from "react";
-import { sanitizeEmailHtml } from "../lib/sanitize";
+import { prepareEmailHtml } from "../lib/sanitize";
 
 interface Props {
 	bodyHtml: string | null;
@@ -8,20 +8,12 @@ interface Props {
 	onRevealImages: () => void;
 }
 
-/**
- * Detect whether the raw HTML body has any external <img src>. Used to decide
- * whether to show the "images hidden" banner. A cheap string check is enough
- * here — a false positive just means the banner shows when there's nothing
- * to reveal, which is harmless.
- */
-function hasExternalImages(html: string): boolean {
-	return /<img[^>]+src\s*=\s*["']?https?:/i.test(html);
-}
-
 export function ThreadMessageBody({ bodyHtml, bodyText, showImages, onRevealImages }: Props) {
 	if (bodyHtml) {
-		const imagesHidden = !showImages && hasExternalImages(bodyHtml);
-		const sanitized = sanitizeEmailHtml(bodyHtml, { allowExternalImages: showImages });
+		const { html: sanitized, hasExternalImages } = prepareEmailHtml(bodyHtml, {
+			allowExternalImages: showImages,
+		});
+		const imagesHidden = !showImages && hasExternalImages;
 
 		return (
 			<div className="prose prose-sm max-w-none">

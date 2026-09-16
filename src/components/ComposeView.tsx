@@ -4,6 +4,10 @@ import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import { plainTextToHtml } from "../lib/replyDefaults";
 import { TipTapEditor } from "./TipTapEditor";
 import { ComposeToolbar } from "./ComposeToolbar";
+import { DraftAttachments } from "./DraftAttachments";
+import type { PublicAttachment } from "../lib/attachments";
+import { postInbox, uploadDraftFiles } from "../lib/attachmentClient";
+import { useComposeOperation } from "../lib/useComposeOperation";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -16,6 +20,7 @@ interface DraftPayload {
 	bodyHtml: string | null;
 	bodyText: string;
 	threadId: string | null;
+	attachments?: PublicAttachment[];
 }
 
 interface Props {
@@ -39,10 +44,11 @@ export function ComposeView({ draftId, onClose }: Props) {
 	const [showCcBcc, setShowCcBcc] = React.useState(false);
 	const [subject, setSubject] = React.useState("");
 	const [currentDraftId, setCurrentDraftId] = React.useState<string | null>(draftId);
+	const currentDraft = React.useRef<string | null>(draftId);
+	const [attachments, setAttachments] = React.useState<PublicAttachment[]>([]);
 	const [initialHtml, setInitialHtml] = React.useState<string | null>(draftId ? null : "");
 	const [editor, setEditor] = React.useState<Editor | null>(null);
-	const [busy, setBusy] = React.useState<"send" | "save" | null>(null);
-	const [error, setError] = React.useState<string | null>(null);
+	const { busy, error, setError, run, locked } = useComposeOperation();
 	// Fields as of the last successful save; null until something has been
 	// saved (fresh compose) or set from the loaded draft (resumed compose).
 	// Used to decide whether closing needs a confirmation.
@@ -63,6 +69,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 				setCc(draft.cc.join(", "));
 				setBcc(draft.bcc.join(", "));
 				setShowCcBcc(draft.cc.length > 0 || draft.bcc.length > 0);
+				setAttachments(draft.attachments ?? []);
 				const loadedSubject = draft.subject === "(no subject)" ? "" : draft.subject;
 				const loadedHtml = draft.bodyHtml ?? plainTextToHtml(draft.bodyText);
 				setSubject(loadedSubject);
@@ -86,63 +93,41 @@ export function ComposeView({ draftId, onClose }: Props) {
 		ed.commands.focus("start");
 	}, []);
 
-	const post = async (path: string, body: unknown) => {
-		const res = await apiFetch(`${API}/${path}`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
-		if (!res.ok) {
-			let message = `request failed (${res.status})`;
-			try {
-				const parsed = (await res.json()) as { error?: { message?: string } };
-				if (parsed?.error?.message) message = parsed.error.message;
-			} catch { /* keep status message */ }
-			throw new Error(message);
-		}
-		return res;
-	};
+	React.useEffect(() => { editor?.setEditable(busy === null); }, [editor, busy]);
 
 	const handleSend = async () => {
-		if (!editor || busy) return;
-		setBusy("send");
-		setError(null);
-		try {
+		if (!editor) return;
+		await run("send", async () => {
 			const fields = { to, cc, bcc, subject, text: editor.getText(), html: editor.getHTML() };
-			if (currentDraftId) {
-				await post("messages/draft-send", { draftId: currentDraftId, edits: fields });
+			if (currentDraft.current) {
+				await postInbox("messages/draft-send", { draftId: currentDraft.current, edits: fields });
 			} else {
-				await post("messages/compose", fields);
+				await postInbox("messages/compose", fields);
 			}
 			onClose();
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			setBusy(null);
-		}
+		});
 	};
 
-	const handleSaveDraft = async () => {
-		if (!editor || busy) return;
-		setBusy("save");
-		setError(null);
-		try {
-			const html = editor.getHTML();
-			const res = await post("messages/draft-save", {
-				draftId: currentDraftId ?? undefined,
-				to, cc, bcc, subject,
-				text: editor.getText(),
-				html,
-			});
-			const data = (await res.json()) as { data: { draftId: string } };
-			setCurrentDraftId(data.data.draftId);
-			setSavedSnapshot({ to, cc, bcc, subject, editorHTML: html });
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			setBusy(null);
-		}
+	const persistCurrentDraft = async (): Promise<string> => {
+		if (!editor) throw new Error("The editor is still loading.");
+		const html = editor.getHTML();
+		const data = await postInbox<{ draftId: string }>("messages/draft-save", {
+			draftId: currentDraft.current ?? undefined, to, cc, bcc, subject, text: editor.getText(), html,
+		});
+		currentDraft.current = data.draftId;
+		setCurrentDraftId(data.draftId);
+		setSavedSnapshot({ to, cc, bcc, subject, editorHTML: html });
+		return data.draftId;
 	};
+	const handleSaveDraft = async () => { if (editor) await run("save", async () => { await persistCurrentDraft(); }); };
+	const handleUpload = (files: File[]) => run("upload", () => uploadDraftFiles(files, {
+		existing: attachments, ensureDraft: persistCurrentDraft,
+		onUploaded: (file) => setAttachments((current) => [...current, file]),
+	}));
+	const handleRemove = (attachmentId: string) => run("remove", async () => {
+		await postInbox("attachments/remove", { draftId: currentDraft.current, attachmentId });
+		setAttachments((current) => current.filter((file) => file.id !== attachmentId));
+	});
 
 	const hasAnyContent = () => {
 		const dirty = editor ? editor.getText().trim() !== "" : false;
@@ -152,7 +137,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 	// "← Inbox" and Escape: never deletes a saved draft. Only asks for
 	// confirmation when there's something that hasn't been saved yet.
 	const handleClose = () => {
-		if (busy) return;
+		if (locked.current) return;
 		if (savedSnapshot) {
 			const current: ComposeSnapshot = { to, cc, bcc, subject, editorHTML: editor ? editor.getHTML() : "" };
 			const changed = (Object.keys(current) as (keyof ComposeSnapshot)[]).some((key) => current[key] !== savedSnapshot[key]);
@@ -166,14 +151,12 @@ export function ComposeView({ draftId, onClose }: Props) {
 	// Discard button: deletes the persisted draft (if any) after confirming,
 	// since this is the explicit "throw this away" action.
 	const handleDiscard = async () => {
-		if (busy) return;
+		if (locked.current) return;
 		if ((hasAnyContent() || currentDraftId) && !window.confirm("Discard this email?")) return;
-		if (currentDraftId) {
-			try {
-				await post("messages/draft-discard", { draftId: currentDraftId });
-			} catch { /* draft may already be gone; closing is still right */ }
-		}
-		onClose();
+		await run("discard", async () => {
+			if (currentDraft.current) await postInbox("messages/draft-discard", { draftId: currentDraft.current });
+			onClose();
+		});
 	};
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
@@ -191,12 +174,12 @@ export function ComposeView({ draftId, onClose }: Props) {
 
 	return (
 		<div className="space-y-4" onKeyDown={onKeyDown}>
-			<button type="button" className="text-sm text-muted-foreground hover:text-foreground" onClick={handleClose}>
+			<button type="button" disabled={disabled} className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50" onClick={handleClose}>
 				← Inbox
 			</button>
 			<h1 className="text-3xl font-bold">{draftId ? "Edit draft" : "New email"}</h1>
 			{error && (
-				<div className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>
+				<div role="alert" className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>
 			)}
 			<label className="block text-xs font-medium">
 				To
@@ -222,8 +205,9 @@ export function ComposeView({ draftId, onClose }: Props) {
 				Subject
 				<input type="text" className={inputClass} value={subject} disabled={disabled} onChange={(e) => setSubject(e.target.value)} />
 			</label>
-			{editor && <ComposeToolbar editor={editor} />}
+			{editor && <fieldset disabled={disabled}><ComposeToolbar editor={editor} /></fieldset>}
 			{initialHtml !== null && <TipTapEditor initialContent={initialHtml} onReady={handleEditorReady} />}
+			<DraftAttachments attachments={attachments} disabled={disabled || !editor} uploading={busy === "upload"} onUpload={(files) => void handleUpload(files)} onRemove={(id) => void handleRemove(id)} />
 			<div className="flex gap-2 pt-2">
 				<button type="button" className="text-sm px-4 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed" disabled={disabled || !editor} onClick={() => void handleSend()}>
 					{busy === "send" ? "Sending…" : "Send"}

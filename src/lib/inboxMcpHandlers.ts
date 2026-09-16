@@ -1,35 +1,17 @@
 import { z } from "zod";
+import { uploadDraftAttachment, removeDraftAttachment, readAttachment } from "./attachments";
 import { listInboxTools, type InboxToolName } from "./inboxMcpTools";
-import { aggregateThreads, isDraftRow, type StatusFilter } from "./threadSummary";
 import { composeSend, replySend, draftSave, draftSend, draftDiscard, listDrafts, type Deliver } from "./composeOps";
 import { draftSummaryOf } from "./draftSummary";
+import { VERSION } from "../version";
+import { listThreadPage, searchMessagePage, loadThreadRows, mutateThread, mailboxPublicMessage, requireMailboxReady, type ThreadPageInput, type SearchPageInput } from "./mailboxStore";
 
 /**
- * MCP wire layer for the inbox plugin.
- *
- * Design choice: manual JSON-RPC dispatch (no `@modelcontextprotocol/sdk`
- * runtime). The SDK's `McpServer` only exposes `connect(transport)` —
- * there's no public method to feed it a raw JSON-RPC request and get a
- * response object back. Its `StreamableHTTPServerTransport` owns a
- * fetch-handler, which doesn't fit EmDash's plugin-route interface (we
- * receive a parsed JSON body in `routeCtx.input` and return a JSON-
- * serializable value — emdash owns the HTTP layer). The previous plan
- * sketch reached into `_server.handleMessage`, but that's a private
- * method that can move between SDK versions.
- *
- * Trade-off: ~70 LOC of dispatcher we own, vs no risk of SDK-internal
- * drift. The SDK is still useful as the zod-schema source-of-truth in
- * `inboxMcpTools.ts` (and for `zod-to-json-schema` via zod v4's built-in
- * `z.toJSONSchema()`), but we don't drive its server runtime here.
- *
- * Handles three methods:
- *   - initialize  — handshake; advertise tools capability
- *   - tools/list  — enumerate tools (with JSON Schema input shapes)
- *   - tools/call  — invoke a named tool with arguments
- *
- * Errors follow the JSON-RPC 2.0 shape: `{ jsonrpc, id, error: { code,
- * message } }`. Tool-level errors (invalid args, handler throw) ride
- * inside the `result.content` envelope with `isError: true` per MCP spec.
+ * Shared inbox operations plus the legacy JSON-RPC dispatcher.
+ * EmDash 0.38's native MCP endpoint is the preferred transport: nativeMcp.ts
+ * registers this catalog and these handlers with the host. The old plugin
+ * route remains for existing proxy clients; it implements initialize,
+ * tools/list and tools/call, not the host's full HTTP/OAuth lifecycle.
  */
 
 /**
@@ -39,8 +21,7 @@ import { draftSummaryOf } from "./draftSummary";
  * live in the corresponding admin path. If the admin handler changes,
  * mirror the change here.
  *
- * No new vitest coverage: each branch is structurally equivalent to an
- * existing admin route handler, exercised indirectly by the admin tests.
+ * Native host integration tests exercise these handlers through EmDash.
  */
 export async function runInboxToolHandler(
 	ctx: any,
@@ -48,111 +29,43 @@ export async function runInboxToolHandler(
 	args: unknown,
 	deliver: Deliver,
 ): Promise<unknown> {
-	const messages = ctx.storage.messages;
-
+	if (
+		["get_thread", "mark_read", "pin_thread", "snooze_thread", "mark_done", "reply_to_thread", "reply_all_to_thread"].includes(name)
+		|| (name === "save_draft" && args !== null && typeof args === "object" && "threadId" in args)
+	) await requireMailboxReady(ctx);
 	switch (name) {
-		case "list_threads": {
-			const { status = "inbox", limit = 25 } =
-				(args as { status?: "inbox" | "snoozed" | "done"; limit?: number }) ?? {};
-			// status is pre-validated by zod in dispatchMcpRequest's safeParse,
-			// so it's already a subset of StatusFilter — no cast needed.
-			const filter: StatusFilter = status;
-			const senderAddress =
-				((await ctx.kv.get("settings:senderAddress")) as string | null) ?? "";
-			const all = await messages.query({ limit: 10000 });
-			const rows = (all.items ?? []) as { id: string; data: any }[];
-			const summaries = aggregateThreads(rows, filter, senderAddress);
-			return summaries.slice(0, limit);
-		}
+		case "add_draft_attachment": return uploadDraftAttachment(ctx, args as never);
+		case "remove_draft_attachment": return removeDraftAttachment(ctx, args as never);
+		case "read_attachment": return readAttachment(ctx, args as never);
+		case "list_threads":
+			return listThreadPage(ctx, (args ?? {}) as ThreadPageInput);
 
 		case "get_thread": {
 			const { threadId } = args as { threadId: string };
-			const all = await messages.query({ limit: 10000 });
-			const rows = (all.items ?? []) as { id: string; data: any }[];
-			return rows
-				.filter((r) => !isDraftRow(r))
-				.map((r) => r.data)
-				.filter((m: any) => (m.threadId ?? m.messageId) === threadId)
-				.sort((a: any, b: any) =>
-					a.receivedAt < b.receivedAt ? -1 : a.receivedAt > b.receivedAt ? 1 : 0,
-				);
+			return (await loadThreadRows(ctx, threadId)).map((row) => ({ ...mailboxPublicMessage(row.data), id: row.id }));
 		}
 
-		case "search_messages": {
-			const { query, limit = 20 } = args as { query: string; limit?: number };
-			const all = await messages.query({ limit: 10000 });
-			const rows = (all.items ?? []) as { id: string; data: any }[];
-			const q = query.toLowerCase();
-			return rows
-				.filter((r) => !isDraftRow(r))
-				.map((r) => r.data)
-				.filter(
-					(m: any) =>
-						(m.subject ?? "").toLowerCase().includes(q) ||
-						(m.bodyText ?? "").toLowerCase().includes(q),
-				)
-				.slice(0, limit);
-		}
+		case "search_messages":
+			return searchMessagePage(ctx, args as SearchPageInput);
 
 		case "mark_read": {
 			const { threadId, read } = args as { threadId: string; read: boolean };
-			const all = await messages.query({ limit: 10000 });
-			const rows = (all.items ?? []) as { id: string; data: any }[];
-			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
-			);
-			for (const row of targets) {
-				await messages.put(row.id, { ...row.data, read });
-			}
-			return { updated: targets.length };
+			return mutateThread(ctx, threadId, () => ({ read }));
 		}
 
 		case "pin_thread": {
 			const { threadId, pinned } = args as { threadId: string; pinned: boolean };
-			const all = await messages.query({ limit: 10000 });
-			const rows = (all.items ?? []) as { id: string; data: any }[];
-			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
-			);
-			for (const row of targets) {
-				await messages.put(row.id, { ...row.data, pinned });
-			}
-			return { updated: targets.length };
+			return mutateThread(ctx, threadId, () => ({ pinned }));
 		}
 
 		case "snooze_thread": {
 			const { threadId, until } = args as { threadId: string; until: string };
-			const all = await messages.query({ limit: 10000 });
-			const rows = (all.items ?? []) as { id: string; data: any }[];
-			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
-			);
-			for (const row of targets) {
-				await messages.put(row.id, {
-					...row.data,
-					status: "snoozed",
-					snoozeUntil: until,
-					sortAt: until,
-				});
-			}
-			return { updated: targets.length, until };
+			return { ...(await mutateThread(ctx, threadId, () => ({ status: "snoozed", snoozeUntil: until, sortAt: until }))), until };
 		}
 
 		case "mark_done": {
 			const { threadId } = args as { threadId: string };
-			const all = await messages.query({ limit: 10000 });
-			const rows = (all.items ?? []) as { id: string; data: any }[];
-			const targets = rows.filter(
-				(r) => (r.data.threadId ?? r.data.messageId) === threadId && !isDraftRow(r),
-			);
-			for (const row of targets) {
-				await messages.put(row.id, {
-					...row.data,
-					status: "done",
-					snoozeUntil: null,
-				});
-			}
-			return { updated: targets.length };
+			return mutateThread(ctx, threadId, () => ({ status: "done", snoozeUntil: null }));
 		}
 
 		case "compose_email":
@@ -216,7 +129,7 @@ export async function dispatchMcpRequest(
 						// MCP spec revision. Bump when the SDK we pair against bumps.
 						protocolVersion: "2025-06-18",
 						capabilities: { tools: {} },
-						serverInfo: { name: "emdash-inbox", version: "0.8.0" },
+						serverInfo: { name: "emdash-inbox", version: VERSION },
 					},
 				};
 

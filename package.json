@@ -1,6 +1,6 @@
 {
 	"name": "emdash-inbox",
-	"version": "0.8.0",
+	"version": "0.9.2",
 	"description": "Inbox-by-Google-style mailbox UI for EmDash CMS, with Cloudflare Email Service transport built in",
 	"keywords": [
 		"emdash",
@@ -36,27 +36,37 @@
 	"files": [
 		"dist",
 		"src",
+		"docs",
+		"vendor",
+		"patches",
+		"scripts/vendor-mime.mjs",
+		"tsdown.config.ts",
+		"tsconfig.json",
 		"LICENSE",
 		"NOTICE",
 		"README.md"
 	],
 	"scripts": {
-		"build": "tsdown",
-		"prepare": "tsdown",
+		"build": "node scripts/vendor-mime.mjs --check && tsdown",
+		"prepare": "node scripts/vendor-mime.mjs --check && tsdown",
+		"vendor:mime": "node scripts/vendor-mime.mjs",
 		"typecheck": "tsc --noEmit",
-		"validate": "emdash plugin validate --dir .",
-		"test": "vitest run --passWithNoTests",
+		"validate": "pnpm build && node scripts/native-validate.mjs",
+		"test": "vitest run",
 		"test:watch": "vitest"
 	},
 	"peerDependencies": {
-		"emdash": "*",
+		"emdash": "^0.38.0",
 		"react": "^19"
 	},
 	"devDependencies": {
 		"@types/react": "^19",
-		"emdash": "^0.29.0",
-		"happy-dom": "^20.9.0",
+		"@types/react-dom": "19",
+		"emdash": "^0.38.0",
+		"jsdom": "^30.0.1",
+		"kysely": "^0.29.0",
 		"react": "^19",
+		"react-dom": "19.2.5",
 		"tsdown": "^0.21.9",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.4"
@@ -67,7 +77,12 @@
 		"@tiptap/react": "^3.22.4",
 		"@tiptap/starter-kit": "^3.22.4",
 		"dompurify": "^3.4.0",
-		"postal-mime": "^2.7.4",
-		"zod": "^4.4.3"
+		"postal-mime": "2.7.4",
+		"zod": "^4.5.4"
+	},
+	"pnpm": {
+		"patchedDependencies": {
+			"postal-mime@2.7.4": "patches/postal-mime@2.7.4.patch"
+		}
 	}
 }

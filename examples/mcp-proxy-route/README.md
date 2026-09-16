@@ -1,39 +1,41 @@
-# MCP Proxy Route
+# Legacy MCP Proxy Route
 
-Unwraps EmDash's response envelope so MCP clients can reach emdash-inbox tools.
+For EmDash 0.38 and newer, use the native MCP endpoint at `https://your.site/_emdash/api/mcp`. Enable emdash-inbox's MCP tools under **Admin → Extensions**, then connect with OAuth or a personal access token that includes `mcp:tools:emdash-inbox`. The token owner's role must also satisfy the tools' required permissions. The native endpoint supports MCP authentication and transport directly; this proxy is optional for existing integrations.
 
-## Why a separate route?
+## Keeping an existing proxy
 
-EmDash wraps every plugin-route response in `{"data": ...}`, which MCP clients expect to parse as raw JSON-RPC responses. This route proxies requests to the plugin's `messages/mcp` endpoint and returns the unwrapped payload, unblocking tools like Claude desktop and claude.ai.
+EmDash wraps plugin-route responses in `{"data": ...}`. This example forwards requests to the private `messages/mcp` plugin route and unwraps its responses for clients using the legacy `/api/inbox-mcp` URL.
 
-## Deploy
+Each request must supply the caller's own `Authorization: Bearer <token>` header. The proxy forwards that credential to EmDash for validation. Session cookies do not authenticate the proxy and are not forwarded. In EmDash 0.38, this legacy plugin route requires a token with `admin` scope and a user with `plugins:manage` permission; the native endpoint's plugin-specific scope does not authorize this legacy route.
 
-1. **Generate an EmDash API token** in the admin (Admin → Settings → API Tokens) with admin scope.
+1. Copy `inbox-mcp.ts` to `src/pages/api/inbox-mcp.ts` in your EmDash site.
 
-2. **Copy `inbox-mcp.ts`** to `src/pages/api/inbox-mcp.ts` in your EmDash site.
+2. Remove `EMDASH_INBOX_MCP_TOKEN` from `.dev.vars`, deployment configuration, and production secrets. This route no longer reads a shared host token. For a Wrangler deployment:
 
-3. **Set the token in `.dev.vars`** (dev) or as a Wrangler secret (production):
    ```bash
-   # .dev.vars (local development)
-   EMDASH_INBOX_MCP_TOKEN=your_token_here
-   
-   # Production
-   npx wrangler secret put EMDASH_INBOX_MCP_TOKEN
+   npx wrangler secret delete EMDASH_INBOX_MCP_TOKEN
    ```
 
-4. **Deploy** your site:
+   Revoke the old shared token in EmDash. Earlier versions of this example used it for every request, including anonymous requests.
+
+3. Build and deploy the site:
+
    ```bash
    pnpm run build
    npx wrangler deploy
    ```
 
-5. **Connect an MCP client**:
-   - **Claude Code**: Use the CLI command:
-     ```bash
-     claude mcp add --transport http emdash-inbox https://your.site/api/inbox-mcp
-     ```
-   - **Claude Desktop / claude.ai**: Add the deployed URL as a custom connector in Settings → Connectors → Add custom connector.
+4. Update each existing MCP client to send its own Bearer token on requests to `https://your.site/api/inbox-mcp`. This legacy proxy does not implement OAuth discovery or consent; use the native endpoint for clients that rely on OAuth.
 
-## Security
+For example, after setting `EMDASH_CALLER_TOKEN` in your local shell:
 
-The endpoint has no per-request auth beyond the server-held token. If your site is public, put the route behind Cloudflare Access or an auth proxy, and rotate the token if exposed.
+```bash
+curl https://your.site/api/inbox-mcp \
+  -H "Authorization: Bearer $EMDASH_CALLER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+## Response behavior
+
+Missing or malformed credentials return `401` without contacting EmDash. EmDash's `401` and `403` responses remain authentication and authorization errors. Other upstream failures return a sanitized `502` JSON-RPC error. Responses are marked `private, no-store`, and the proxy does not follow upstream redirects or forward cookies.

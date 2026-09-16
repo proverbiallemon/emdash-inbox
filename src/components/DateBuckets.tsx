@@ -3,6 +3,7 @@ import { bucketize, type Direction } from "../lib/bucketize";
 
 interface Row {
 	id: string;
+	pinned?: boolean;
 	sortAt: string;
 	snoozeUntil: string | null;
 }
@@ -22,9 +23,10 @@ export function DateBuckets<T extends Row>({
 	now,
 	renderRow,
 }: Props<T>) {
-	const buckets = bucketize(rows, (r) => r[field], now ?? new Date(), direction);
+	const buckets = bucketize(rows.filter(row => !row.pinned), (r) => r[field], now ?? new Date(), direction);
 
 	const sections: { label: string; rows: T[] }[] = [
+		{ label: "Pinned", rows: rows.filter(row => row.pinned) },
 		{ label: "Today", rows: buckets.today },
 		{
 			label: direction === "future" ? "Tomorrow" : "Yesterday",

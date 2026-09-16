@@ -1,17 +1,20 @@
+import type { PublicAttachment } from "./attachments";
 import type { MessageDoc } from "../index";
 import { deriveParticipantChips, type ParticipantChip } from "./participantChips";
 
 export type StatusFilter = "inbox" | "snoozed" | "done" | "all";
 
+export type MessageView = Omit<MessageDoc, "bodyRaw" | "rawObjectKey" | "attachments"> & { attachments?: PublicAttachment[] };
+
 export interface ThreadSummary {
 	id: string;
 	threadId: string;
 	openMessageId: string;
-	latest: MessageDoc;
-	previous: MessageDoc | null;
+	latest: MessageView;
+	previous: MessageView | null;
 	messageCount: number;
 	unreadCount: number;
-	messageIds: string[];
+	messageIds?: string[];
 	participants: ParticipantChip[];
 	pinned: boolean;
 	sortAt: string;

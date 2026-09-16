@@ -1,5 +1,7 @@
 import * as React from "react";
 import { ThreadMessageBody } from "./ThreadMessageBody";
+import { AttachmentDownloads } from "./AttachmentDownloads";
+import type { PublicAttachment } from "../lib/attachments";
 
 type Direction = "inbound" | "outbound";
 
@@ -13,6 +15,7 @@ export interface ThreadMessageRow {
 		bodyText: string;
 		bodyHtml: string | null;
 		receivedAt: string;
+		attachments?: PublicAttachment[];
 	};
 }
 
@@ -51,6 +54,7 @@ export function ThreadMessage({ row, showImages, onRevealImages }: Props) {
 				showImages={showImages}
 				onRevealImages={onRevealImages}
 			/>
+			<AttachmentDownloads messageId={row.id} attachments={m.attachments ?? []} />
 		</div>
 	);
 }

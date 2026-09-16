@@ -26,7 +26,10 @@ export type InboxToolName =
 	| "save_draft"
 	| "list_drafts"
 	| "send_draft"
-	| "discard_draft";
+	| "discard_draft"
+	| "add_draft_attachment"
+	| "remove_draft_attachment"
+	| "read_attachment";
 
 export interface InboxToolDef<TInput extends z.ZodType = z.ZodType> {
 	name: InboxToolName;
@@ -34,11 +37,12 @@ export interface InboxToolDef<TInput extends z.ZodType = z.ZodType> {
 	inputSchema: TInput;
 }
 
-const statusSchema = z.enum(["inbox", "snoozed", "done"]);
+const statusSchema = z.enum(["inbox", "snoozed", "done", "all"]);
 
 const listThreadsInput = z.object({
 	status: statusSchema.optional().describe("Filter by status. Defaults to 'inbox'."),
 	limit: z.number().int().positive().max(100).optional().describe("Max threads to return (1-100). Default 25."),
+	cursor: z.string().min(1).max(4096).optional().describe("Continuation from the previous page, keeping the same status filter."),
 });
 
 const getThreadInput = z.object({
@@ -46,8 +50,9 @@ const getThreadInput = z.object({
 });
 
 const searchMessagesInput = z.object({
-	query: z.string().min(1).describe("Plain-text query matched against message subject and body."),
+	query: z.string().min(1).max(1000).describe("Plain-text query matched against message subject and body."),
 	limit: z.number().int().positive().max(50).optional().describe("Max matches to return. Default 20."),
+	cursor: z.string().min(1).max(4096).optional().describe("Continuation from the previous search page, keeping the same query."),
 });
 
 const markReadInput = z.object({
@@ -122,10 +127,13 @@ const discardDraftInput = z.object({
 
 export function listInboxTools(): InboxToolDef[] {
 	return [
+		{ name: "add_draft_attachment", description: "Attach a file to a saved draft. Provide canonical base64 bytes; at most 3 MiB combined across 32 attachments. Returns metadata without private storage keys.", inputSchema: z.object({ draftId: z.string().min(1), filename: z.string().min(1).max(1000), mimeType: z.string().max(127).optional(), contentBase64: z.string().max(4 * 1024 * 1024) }) },
+		{ name: "remove_draft_attachment", description: "Remove one attachment belonging to a saved draft.", inputSchema: z.object({ draftId: z.string().min(1), attachmentId: z.string().min(1) }) },
+		{ name: "read_attachment", description: "Read a file belonging to a message or draft in base64 chunks of up to 256 KiB. Continue at nextOffset until done. Requires both the storage message ID and its attachment ID.", inputSchema: z.object({ messageId: z.string().min(1), attachmentId: z.string().min(1), offset: z.number().int().nonnegative().optional(), limit: z.number().int().positive().max(256 * 1024).optional() }) },
 		{
 			name: "list_threads",
 			description:
-				"List threads in the inbox, optionally filtered by status (inbox/snoozed/done). Returns thread summaries (id, latest sender, subject, snippet, unread count, message count, sortAt).",
+				"List complete threads by status (inbox/snoozed/done/all). Returns {items,cursor,hasMore,indexing?}; pass cursor to continue. If indexing is true, retry the same request while the mailbox index is prepared.",
 			inputSchema: listThreadsInput,
 		},
 		{
@@ -137,7 +145,7 @@ export function listInboxTools(): InboxToolDef[] {
 		{
 			name: "search_messages",
 			description:
-				"Plain-text search across message subject and body. Returns matching thread summaries with the matched message highlighted. Useful for finding conversations by topic when you don't know the thread ID.",
+				"Case-insensitive substring search across message subject and body. Returns {items,cursor,hasMore,indexing?} with matching messages. Continue whenever hasMore is true, including empty pages; if indexing is true, retry the same request.",
 			inputSchema: searchMessagesInput,
 		},
 		{
