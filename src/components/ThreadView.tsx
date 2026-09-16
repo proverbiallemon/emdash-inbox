@@ -45,8 +45,10 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	// "reply-all" additionally prefills cc via deriveReplyAll.
 	const [replyMode, setReplyMode] = React.useState<"reply" | "reply-all" | null>(null);
 
-	const loadThread = React.useCallback(async () => {
-		setLoading(true);
+	const loadThread = React.useCallback(async (refresh = false) => {
+		// Keep an open reply (including its delivery lock) mounted while
+		// refreshing the authoritative rows after a thread action.
+		if (!refresh) setLoading(true);
 		setError(null);
 		try {
 			const res = await apiFetch(`${API}/messages/thread`, {
@@ -70,61 +72,19 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 		void loadThread();
 	}, [loadThread]);
 
-	// Bulk action orchestrator. Applies `transform` to every row locally,
-	// fires `call` in parallel; reverts just the failed rows on error.
-	// Gated by `busy` so two rapid clicks can't race on the same thread's state.
-	const bulk = React.useCallback(
-		async (
-			transform: (r: Row) => Row,
-			call: (r: Row) => Promise<void>,
-		) => {
-			if (busy) return;
-			setBusy(true);
-			const prev = thread;
-			setThread(thread.map(transform));
-			try {
-				const results = await Promise.allSettled(thread.map(call));
-				const failedIds = results
-					.map((r, i) => (r.status === "rejected" ? thread[i].id : null))
-					.filter((id): id is string => id !== null);
-				if (failedIds.length > 0) {
-					setThread((curr) =>
-						curr.map((m) => (failedIds.includes(m.id) ? prev.find((p) => p.id === m.id)! : m)),
-					);
-					setError(`Failed to update ${failedIds.length} message(s).`);
-				}
-			} finally {
-				setBusy(false);
-			}
-		},
-		[thread, busy],
-	);
-
-	const handlePin = (nextPinned: boolean) =>
-		bulk(
-			(r) => ({ ...r, data: { ...r.data, pinned: nextPinned } }),
-			async (r) => {
-				const res = await apiFetch(`${API}/messages/pin`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ id: r.id, pinned: nextPinned }),
-				});
-				if (!res.ok) throw new Error(`pin ${r.id} failed (${res.status})`);
-			},
-		);
-
-	const handleStatus = (nextStatus: "inbox" | "done") =>
-		bulk(
-			(r) => ({ ...r, data: { ...r.data, status: nextStatus } }),
-			async (r) => {
-				const res = await apiFetch(`${API}/messages/status`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ id: r.id, status: nextStatus }),
-				});
-				if (!res.ok) throw new Error(`status ${r.id} failed (${res.status})`);
-			},
-		);
+	const actOnThread = async (action: Record<string, unknown>) => {
+		if (busy || !thread.length) return;
+		setBusy(true);
+		try {
+			const threadId = thread[0].data.threadId ?? thread[0].data.messageId;
+			const res = await apiFetch(`${API}/threads/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId, ...action }) });
+			await parseApiResponse(res, "Failed to update thread");
+			await loadThread(true);
+		} catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+		finally { setBusy(false); }
+	};
+	const handlePin = (pinned: boolean) => actOnThread({ action: "pin", pinned });
+	const handleStatus = (status: "inbox" | "done") => actOnThread({ action: "status", status });
 
 	const handleReply = () => setReplyMode("reply");
 	const handleReplyAll = () => setReplyMode("reply-all");
@@ -134,23 +94,13 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	};
 	const handleReplyDiscard = () => setReplyMode(null);
 
-	const handleSnoozeConfirm = async (iso: string) => {
+	const handleSnoozeConfirm = async (snoozeUntil: string) => {
 		setSnoozingOpen(false);
-		await bulk(
-			(r) => ({ ...r, data: { ...r.data, status: "snoozed" } }),
-			async (r) => {
-				const res = await apiFetch(`${API}/messages/status`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ id: r.id, status: "snoozed", snoozeUntil: iso }),
-				});
-				if (!res.ok) throw new Error(`snooze ${r.id} failed (${res.status})`);
-			},
-		);
+		await actOnThread({ action: "status", status: "snoozed", snoozeUntil });
 	};
 
 	if (loading) return <div className="p-6 text-muted-foreground">Loading thread…</div>;
-	if (error) return (
+	if (error && thread.length === 0) return (
 		<div className="space-y-3">
 			<button type="button" onClick={onBack} className="text-sm underline hover:no-underline">
 				← Inbox
@@ -224,6 +174,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 			<button type="button" onClick={onBack} className="text-sm underline hover:no-underline">
 				← Inbox
 			</button>
+			{error && <div role="alert" className="p-3 rounded-lg border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>}
 			<ThreadHeader subject={subject} participants={participants} messageCount={thread.length}>
 				<ThreadActions
 					thread={thread}

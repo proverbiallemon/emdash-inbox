@@ -4,6 +4,12 @@ import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import { plainTextToHtml } from "../lib/replyDefaults";
 import { TipTapEditor } from "./TipTapEditor";
 import { ComposeToolbar } from "./ComposeToolbar";
+import { DraftAttachments } from "./DraftAttachments";
+import type { PublicAttachment } from "../lib/attachments";
+import { postInbox, uploadDraftFiles } from "../lib/attachmentClient";
+import { useComposeOperation } from "../lib/useComposeOperation";
+import { useDeliveryAttempt, type SendResult } from "../lib/useDeliveryAttempt";
+import { DeliveryNotice } from "./DeliveryNotice";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -16,6 +22,7 @@ interface DraftPayload {
 	bodyHtml: string | null;
 	bodyText: string;
 	threadId: string | null;
+	attachments?: PublicAttachment[];
 }
 
 interface Props {
@@ -39,10 +46,12 @@ export function ComposeView({ draftId, onClose }: Props) {
 	const [showCcBcc, setShowCcBcc] = React.useState(false);
 	const [subject, setSubject] = React.useState("");
 	const [currentDraftId, setCurrentDraftId] = React.useState<string | null>(draftId);
+	const currentDraft = React.useRef<string | null>(draftId);
+	const [attachments, setAttachments] = React.useState<PublicAttachment[]>([]);
 	const [initialHtml, setInitialHtml] = React.useState<string | null>(draftId ? null : "");
 	const [editor, setEditor] = React.useState<Editor | null>(null);
-	const [busy, setBusy] = React.useState<"send" | "save" | null>(null);
-	const [error, setError] = React.useState<string | null>(null);
+	const { busy, error, setError, run, locked } = useComposeOperation();
+	const delivery = useDeliveryAttempt();
 	// Fields as of the last successful save; null until something has been
 	// saved (fresh compose) or set from the loaded draft (resumed compose).
 	// Used to decide whether closing needs a confirmation.
@@ -57,12 +66,13 @@ export function ComposeView({ draftId, onClose }: Props) {
 				const res = await apiFetch(`${API}/messages/drafts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
 				const data = await parseApiResponse<{ items: DraftPayload[] }>(res, "Failed to load draft");
 				const draft = data.items.find((d) => d.id === draftId);
-				if (!draft) throw new Error("Draft not found — it may have been sent or discarded.");
+				if (!draft) throw new Error("Draft not found — it may be in Outbox, sent, or discarded. Check Outbox before sending again.");
 				if (cancelled) return;
 				setTo(draft.to.join(", "));
 				setCc(draft.cc.join(", "));
 				setBcc(draft.bcc.join(", "));
 				setShowCcBcc(draft.cc.length > 0 || draft.bcc.length > 0);
+				setAttachments(draft.attachments ?? []);
 				const loadedSubject = draft.subject === "(no subject)" ? "" : draft.subject;
 				const loadedHtml = draft.bodyHtml ?? plainTextToHtml(draft.bodyText);
 				setSubject(loadedSubject);
@@ -86,63 +96,50 @@ export function ComposeView({ draftId, onClose }: Props) {
 		ed.commands.focus("start");
 	}, []);
 
-	const post = async (path: string, body: unknown) => {
-		const res = await apiFetch(`${API}/${path}`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
-		if (!res.ok) {
-			let message = `request failed (${res.status})`;
-			try {
-				const parsed = (await res.json()) as { error?: { message?: string } };
-				if (parsed?.error?.message) message = parsed.error.message;
-			} catch { /* keep status message */ }
-			throw new Error(message);
+	React.useEffect(() => { editor?.setEditable(busy === null && !delivery.status); }, [editor, busy, delivery.status]);
+
+	const handleResult = (result: SendResult | undefined) => {
+		if (!result || result.deliveryStatus === "pending" || result.deliveryStatus === "uncertain") return;
+		if (result.deliveryStatus === "failed") {
+			if (result.draftId) { currentDraft.current = result.draftId; setCurrentDraftId(result.draftId); }
+			setError(result.error ?? "Delivery was rejected. Your email remains editable as a draft.");
+			return;
 		}
-		return res;
+		onClose();
 	};
 
 	const handleSend = async () => {
-		if (!editor || busy) return;
-		setBusy("send");
-		setError(null);
-		try {
+		if (!editor || delivery.isBlocked()) return;
+		await run("send", async () => {
 			const fields = { to, cc, bcc, subject, text: editor.getText(), html: editor.getHTML() };
-			if (currentDraftId) {
-				await post("messages/draft-send", { draftId: currentDraftId, edits: fields });
-			} else {
-				await post("messages/compose", fields);
-			}
-			onClose();
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			setBusy(null);
-		}
+			handleResult(currentDraft.current
+				? await delivery.send("messages/draft-send", { draftId: currentDraft.current, edits: fields })
+				: await delivery.send("messages/compose", fields));
+		});
 	};
 
-	const handleSaveDraft = async () => {
-		if (!editor || busy) return;
-		setBusy("save");
-		setError(null);
-		try {
-			const html = editor.getHTML();
-			const res = await post("messages/draft-save", {
-				draftId: currentDraftId ?? undefined,
-				to, cc, bcc, subject,
-				text: editor.getText(),
-				html,
-			});
-			const data = (await res.json()) as { data: { draftId: string } };
-			setCurrentDraftId(data.data.draftId);
-			setSavedSnapshot({ to, cc, bcc, subject, editorHTML: html });
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			setBusy(null);
-		}
+	const persistCurrentDraft = async (): Promise<string> => {
+		if (delivery.isBlocked()) throw new Error("Resolve the delivery in Outbox before editing this email.");
+		if (!editor) throw new Error("The editor is still loading.");
+		const html = editor.getHTML();
+		const data = await postInbox<{ draftId: string }>("messages/draft-save", {
+			draftId: currentDraft.current ?? undefined, to, cc, bcc, subject, text: editor.getText(), html,
+		});
+		currentDraft.current = data.draftId;
+		setCurrentDraftId(data.draftId);
+		setSavedSnapshot({ to, cc, bcc, subject, editorHTML: html });
+		return data.draftId;
 	};
+	const handleSaveDraft = async () => { if (editor) await run("save", async () => { await persistCurrentDraft(); }); };
+	const handleUpload = (files: File[]) => run("upload", () => uploadDraftFiles(files, {
+		existing: attachments, ensureDraft: persistCurrentDraft,
+		onUploaded: (file) => setAttachments((current) => [...current, file]),
+	}));
+	const handleRemove = (attachmentId: string) => run("remove", async () => {
+		if (delivery.isBlocked()) return;
+		await postInbox("attachments/remove", { draftId: currentDraft.current, attachmentId });
+		setAttachments((current) => current.filter((file) => file.id !== attachmentId));
+	});
 
 	const hasAnyContent = () => {
 		const dirty = editor ? editor.getText().trim() !== "" : false;
@@ -152,7 +149,8 @@ export function ComposeView({ draftId, onClose }: Props) {
 	// "← Inbox" and Escape: never deletes a saved draft. Only asks for
 	// confirmation when there's something that hasn't been saved yet.
 	const handleClose = () => {
-		if (busy) return;
+		if (locked.current) return;
+		if (delivery.isBlocked()) { onClose(); return; }
 		if (savedSnapshot) {
 			const current: ComposeSnapshot = { to, cc, bcc, subject, editorHTML: editor ? editor.getHTML() : "" };
 			const changed = (Object.keys(current) as (keyof ComposeSnapshot)[]).some((key) => current[key] !== savedSnapshot[key]);
@@ -166,14 +164,12 @@ export function ComposeView({ draftId, onClose }: Props) {
 	// Discard button: deletes the persisted draft (if any) after confirming,
 	// since this is the explicit "throw this away" action.
 	const handleDiscard = async () => {
-		if (busy) return;
+		if (locked.current || delivery.isBlocked() || (draftId !== null && initialHtml === null)) return;
 		if ((hasAnyContent() || currentDraftId) && !window.confirm("Discard this email?")) return;
-		if (currentDraftId) {
-			try {
-				await post("messages/draft-discard", { draftId: currentDraftId });
-			} catch { /* draft may already be gone; closing is still right */ }
-		}
-		onClose();
+		await run("discard", async () => {
+			if (currentDraft.current) await postInbox("messages/draft-discard", { draftId: currentDraft.current });
+			onClose();
+		});
 	};
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
@@ -187,17 +183,19 @@ export function ComposeView({ draftId, onClose }: Props) {
 	};
 
 	const inputClass = "w-full text-sm border rounded px-2 py-1 disabled:opacity-50";
-	const disabled = busy !== null;
+	const disabled = busy !== null || delivery.status !== null || (draftId !== null && initialHtml === null);
 
 	return (
 		<div className="space-y-4" onKeyDown={onKeyDown}>
-			<button type="button" className="text-sm text-muted-foreground hover:text-foreground" onClick={handleClose}>
+			<button type="button" disabled={busy !== null} className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50" onClick={handleClose}>
 				← Inbox
 			</button>
 			<h1 className="text-3xl font-bold">{draftId ? "Edit draft" : "New email"}</h1>
 			{error && (
-				<div className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>
+				<div role="alert" className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>
 			)}
+			{error && draftId && initialHtml === null && <a href="/_emdash/admin/plugins/emdash-inbox?status=outbox" className="inline-block text-sm underline">Open Outbox</a>}
+			<DeliveryNotice status={delivery.status} attemptId={delivery.attemptId} busy={busy !== null} onCheck={() => void run("send", async () => { handleResult(await delivery.check()); })} />
 			<label className="block text-xs font-medium">
 				To
 				<input type="text" className={inputClass} value={to} disabled={disabled} placeholder="a@example.com, b@example.com" onChange={(e) => setTo(e.target.value)} />
@@ -214,7 +212,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 					</label>
 				</>
 			) : (
-				<button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowCcBcc(true)}>
+				<button type="button" disabled={disabled} className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowCcBcc(true)}>
 					Cc/Bcc
 				</button>
 			)}
@@ -222,8 +220,9 @@ export function ComposeView({ draftId, onClose }: Props) {
 				Subject
 				<input type="text" className={inputClass} value={subject} disabled={disabled} onChange={(e) => setSubject(e.target.value)} />
 			</label>
-			{editor && <ComposeToolbar editor={editor} />}
+			{editor && <fieldset disabled={disabled}><ComposeToolbar editor={editor} /></fieldset>}
 			{initialHtml !== null && <TipTapEditor initialContent={initialHtml} onReady={handleEditorReady} />}
+			<DraftAttachments attachments={attachments} disabled={disabled || !editor} uploading={busy === "upload"} onUpload={(files) => void handleUpload(files)} onRemove={(id) => void handleRemove(id)} />
 			<div className="flex gap-2 pt-2">
 				<button type="button" className="text-sm px-4 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed" disabled={disabled || !editor} onClick={() => void handleSend()}>
 					{busy === "send" ? "Sending…" : "Send"}

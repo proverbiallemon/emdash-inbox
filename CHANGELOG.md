@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Durable Outbox and send journal: locked snapshots survive interrupted requests,
+  accepted receipts recover into Sent, and unknown outcomes require operator review.
+- Stable optional request IDs on sending routes/tools, plus three delivery review
+  MCP tools. Browser retries retain the original request instead of starting another.
+  See `docs/durable-send-recovery.md` for limits and resolution behavior.
+
+- Native EmDash MCP registration for all 20 inbox tools, with host-managed
+  authentication, plugin consent, scope checks, and destructive-tool metadata.
+- SQLite-backed integration tests for mail threading, draft contention,
+  inbound authentication, and cron dispatch; published MCP HTTP adapter tests.
+- GitHub Actions and native package validation, including package exports and
+  descriptor/runtime version consistency.
 - Inbox Settings admin page (Admin → Inbox Settings) with matching
   `settings/get` / `settings/save` routes. EmDash never renders a
   plugin's `settingsSchema` (the auto-generated settings UI its types
@@ -22,8 +34,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `adminPages` entries no navigation of their own, so the plugin
   provides its own way in.
 
+- Complete-thread pagination with durable CAS-repaired thread/search indexes,
+  resumable migration and substring search, and UI load-more/refresh controls.
+- Private R2 attachment storage with authenticated chunked downloads, draft
+  upload/remove/send lifecycle, three attachment MCP tools, and byte-preserving
+  inbound MIME envelopes. See `docs/mailbox-and-attachments.md` for limits/setup.
+
 ### Fixed
 
+- Outgoing attachments use binary ArrayBuffer content for the Workers binding.
+  A recipient-side download exposed that base64 strings were sent as file text.
+- Incoming attachments retain their original bytes across MIME transfer
+  encodings, including line endings and calendar files. The live 0.9.0 check
+  exposed normalization in postal-mime; the corrected parser ships in 0.9.1.
+- Draft updates no longer send stale HTML after a text edit. Revision-checked
+  save/send/discard operations prevent stale writes and concurrent duplicate
+  sends; definitive rejection restores the latest edits, while uncertain outcomes stay locked.
+- Legacy migrations skip drafts so delayed scans cannot recreate sent or
+  discarded rows. Server replies use escaped text quotes without invoking
+  browser-only DOMPurify; HTML-only originals receive an omission note.
+- Outbound storage retains complete provider Message-IDs and reply References.
+  Missing/opaque transport IDs are retained with a clearly local fallback identity.
+- Email rendering strips remote-loading CSS, responsive sources and embedded
+  resources; external images require explicit opt-in.
+- The legacy proxy requires each caller's Bearer token instead of supplying a
+  host admin token to anonymous requests. Replace existing deployed examples and
+  revoke their shared token; native MCP is now preferred.
+- The admin entrypoint is included in TypeScript checks, and descriptor/runtime
+  versions now match the package and legacy MCP handshake.
 - `POST inbound` with no `inboundSecret` configured now returns 401 with
   an operator-actionable message instead of a masked 500 ("Plugin route
   error") — the unconfigured state read as a crash during host setup.
@@ -31,6 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `prepare` script now runs the tsdown build on the consumer side, so
   `dist/` exists where `exports` points. Previously the git tree shipped
   only `src/` and imports failed with `MODULE_NOT_FOUND`.
+
+### Changed
+
+- Development package is now 0.10.0. `list_threads` and `search_messages` return
+  `{items,cursor,hasMore,indexing?}` instead of bare arrays. Continue empty search
+  pages while `hasMore` is true; retry indexing responses. `get_thread` now
+  includes storage IDs for attachment reads. Legacy `messages/list` remains.
+- Message responses omit raw MIME and private object keys. Inbound decoded
+  text/HTML is limited to 256 KiB; raw MIME to 8 MiB. Outgoing attachments total
+  at most 3 MiB across 32 files, within the encoded provider limit.
+
+- Minimum host version is EmDash 0.38.x, tested with 0.38.0. Zod is aligned
+  with the host's native MCP schemas. Tests use jsdom instead of happy-dom.
+- `pnpm validate` builds and validates the native package; it no longer runs
+  the CLI validator intended for sandbox plugin bundles.
+- Source email CSS is intentionally removed, preserving structural formatting
+  at the cost of some sender styling. No existing mailbox data is rewritten
+  to repair historical invented Message-IDs.
 
 ## [0.8.0] — 2026-07-11
 

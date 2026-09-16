@@ -1,7 +1,7 @@
 import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
 import { DeliverError, wrapBindingError, type EmailBinding } from "./lib/cfBindingError";
-import PostalMime from "postal-mime";
+import PostalMime from "./lib/mimeParser";
 import { validateTransition } from "./lib/statusTransitions";
 import { deriveThreadInfo } from "./lib/threadDerive";
 import { aggregateThreads, isDraftRow, type StatusFilter } from "./lib/threadSummary";
@@ -17,10 +17,18 @@ import {
 	type ComposeInput,
 	type ReplyInput,
 	type DraftInput,
+	type Deliver,
 } from "./lib/composeOps";
+import { runDelivery, findDeliveryRequest, projectDeliveryMessage, listDeliveries, reconcileDeliveries, resolveDelivery, deliveryCollections, deliveryMessageIndexes, DeliveryError, type DeliveryAttempt, type DeliveryResult } from "./lib/deliveryJournal";
 import { draftSummaryOf } from "./lib/draftSummary";
 import { normalizeRecipients } from "./lib/recipients";
 import { extractAddresses } from "./lib/inboundAddresses";
+import { nativeInboxMcp } from "./lib/nativeMcp";
+import { listDeliveriesInput, resolveDeliveryInput } from "./lib/inboxMcpTools";
+import { normalizeMessageId, replyReferences } from "./lib/messageIdentity";
+import { VERSION } from "./version";
+import { requireMailboxReady, MailboxInputError, mailboxCollections, mailboxMessageIndexes, allRows, loadThreadRows, putMessage, mutateMessage, mutateThread, ensureMailboxIndex, listThreadPage, wakeSnoozed } from "./lib/mailboxStore";
+import { attachmentCollections, AttachmentError, type StoredAttachment, publicMessage, uploadDraftAttachment, removeDraftAttachment, readAttachment, storeInboundFiles, prepareOutgoingAttachments, retryAttachmentCleanup, decodeBase64, MAX_INBOUND_BYTES, MAX_BODY_BYTES } from "./lib/attachments";
 
 /**
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
@@ -29,7 +37,7 @@ import { extractAddresses } from "./lib/inboundAddresses";
 export function emdashInboxPlugin(): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
-		version: "0.7.0",
+		version: VERSION,
 		format: "native",
 		entrypoint: "emdash-inbox",
 		adminEntry: "emdash-inbox/admin",
@@ -64,11 +72,25 @@ const SETTINGS = {
  *     straight `get(id)` → mutate → `put(id)` with no hashing indirection.
  */
 export type MessageDirection = "inbound" | "outbound";
-export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft";
+export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft" | "outbox";
 
 export interface MessageDoc {
+	deliveryAttemptId?: string;
+	deliveryFingerprint?: string;
+	deliveryCreatedAt?: string;
+	deliveryProjected?: boolean;
+	attachments?: StoredAttachment[];
+	rawObjectKey?: string;
+	indexDirty?: boolean;
+	messageKey?: string;
+	indexPreviousThreadIds?: string[];
+	indexSchemaVersion?: number;
 	/** RFC 5322 Message-ID (angle-bracketed). Unique per document. */
 	messageId: string;
+	/** Original transport ID, retained even if the provider returns an opaque ID. */
+	transportMessageId?: string;
+	/** Validated RFC ancestor identifiers, oldest first. Absent on older rows. */
+	references?: string[];
 	direction: MessageDirection;
 	from: string;
 	to: string;
@@ -123,261 +145,37 @@ export interface ContactDoc {
 	outboundCount: number;
 }
 
-async function persistOutbound(
-	ctx: any,
-	event: {
-		message: {
-			to: string;
-			toAll?: string[];
-			cc?: string[];
-			bcc?: string[];
-			subject: string;
-			text: string;
-			html?: string;
-			inReplyTo?: string;
-		};
-		source: string;
-	},
-	senderAddress: string,
-): Promise<{ id: string; threadId: string }> {
-	const now = new Date().toISOString();
-	const msgId = crypto.randomUUID();
-	const senderDomain = senderAddress.split("@")[1] ?? "emdash-inbox.local";
-	const messageId = `<${msgId}@${senderDomain}>`;
-
-	// Derive threadId from inReplyTo (if caller provided).
-	const inReplyToHeader = event.message.inReplyTo ?? null;
-	let derivedThreadId = messageId;
-	let derivedInReplyTo: string | null = null;
-	if (inReplyToHeader) {
-		const hit = await (ctx.storage as any).messages.query({
-			where: { messageId: inReplyToHeader },
-			limit: 1,
-		});
-		const parent = hit.items?.[0];
-		const lookup = (id: string) =>
-			parent && parent.data.messageId === id
-				? { messageId: parent.data.messageId, threadId: parent.data.threadId ?? null }
-				: null;
-		const derived = deriveThreadInfo(messageId, inReplyToHeader, [], lookup);
-		derivedThreadId = derived.threadId;
-		derivedInReplyTo = derived.inReplyTo;
-	}
-
-	const msg: MessageDoc = {
-		messageId,
-		direction: "outbound",
-		from: senderAddress,
-		to: event.message.to,
-		toAll: event.message.toAll ?? [event.message.to],
-		cc: event.message.cc ?? [],
-		bcc: event.message.bcc ?? [],
-		subject: event.message.subject,
-		bodyText: event.message.text,
-		bodyHtml: event.message.html ?? null,
-		bodyRaw: null,
-		threadId: derivedThreadId,
-		receivedAt: now,
-		source: event.source,
-		status: "done",
-		pinned: false,
-		read: true,   // outbound: we sent it, nothing to read
-		bundleId: null,
-		sortAt: now,
-		snoozeUntil: null,
-		inReplyTo: derivedInReplyTo,
-	};
-	await ctx.storage.messages.put(msgId, msg);
-
-	const contactId = event.message.to.trim().toLowerCase();
-	const existing = (await ctx.storage.contacts.get(contactId)) as
-		| ContactDoc
-		| null;
-	const contact: ContactDoc = existing
-		? {
-				...existing,
-				lastContactAt: now,
-				messageCount: existing.messageCount + 1,
-				outboundCount: existing.outboundCount + 1,
-			}
-		: {
-				email: event.message.to,
-				name: null,
-				firstSeenAt: now,
-				lastContactAt: now,
-				messageCount: 1,
-				inboundCount: 0,
-				outboundCount: 1,
-			};
-	await ctx.storage.contacts.put(contactId, contact);
-
-	return { id: msgId, threadId: derivedThreadId };
+/** Project an accepted receipt into the same durable row; recovery never sends. */
+async function projectSent(ctx: any, attempt: DeliveryAttempt): Promise<{ id: string; threadId: string }> {
+	const deliveredMessageId = attempt.receipt?.messageId;
+	const messageId = normalizeMessageId(deliveredMessageId) ?? `<sent-${attempt.messageId}@local>`;
+	const snapshot = attempt.snapshot;
+	return projectDeliveryMessage(ctx, attempt, {
+		...snapshot,
+		messageId, transportMessageId: deliveredMessageId,
+		threadId: snapshot.inReplyTo ? snapshot.threadId ?? snapshot.inReplyTo : messageId,
+		status: "done", read: true,
+	});
 }
 
-/**
- * Idempotent M3 setup — backfills sortAt/snoozeUntil on any pre-M3 message
- * rows, and (when `ctx.cron` is available) ensures the wake-snoozed cron is
- * scheduled.
- *
- * Called from three places, each with slightly different ctx shape:
- *   - plugin:install  (fresh installs)         — ctx.cron is populated
- *   - plugin:activate (admin-UI activations)    — ctx.cron is populated
- *   - messages/list route (lazy, every request) — ctx.cron is UNDEFINED
- *
- * The route context skip is a quirk of EmDash v0.5.0: PluginRouteHandler
- * constructs its own PluginContextFactory at boot, before the cron scheduler
- * wires `cronReschedule` into the hook-pipeline factory — so route contexts
- * never get `ctx.cron`. We tolerate this by skipping the schedule call when
- * ctx.cron is missing.
- *
- * For config-registered plugins (astro.config.mjs) the admin-UI activate path
- * is the ONLY way to fire plugin:activate. To schedule the cron on such
- * sites, navigate to the admin plugins page and enable the plugin explicitly.
- *
- * All operations are idempotent:
- *   - Row backfill is guarded by `if (sortAt && snoozeUntil !== undefined) continue`.
- *   - `ctx.cron.schedule` upserts by name (backed by _emdash_cron_tasks unique
- *     index on (plugin_id, task_name)).
- *
- * Pre-alpha data volumes make the full-scan backfill cheap. If message counts
- * grow into the tens of thousands, gate with a kv "m3:migrated" flag so the
- * scan runs once per worker instead of per-request.
- */
+/** Contact statistics are best effort; a mail receipt never depends on them. */
+async function recordOutboundContact(ctx: any, email: string, at: string): Promise<void> {
+	const id = email.trim().toLowerCase();
+	for (let retry = 0; retry < 5; retry++) {
+		const current = await ctx.storage.contacts.getVersioned(id);
+		const prior = current?.value as ContactDoc | undefined;
+		const next: ContactDoc = prior ? {
+			...prior, lastContactAt: prior.lastContactAt > at ? prior.lastContactAt : at,
+			messageCount: prior.messageCount + 1, outboundCount: prior.outboundCount + 1,
+		} : { email, name: null, firstSeenAt: at, lastContactAt: at, messageCount: 1, inboundCount: 0, outboundCount: 1 };
+		if ((await ctx.storage.contacts.compareAndSet(id, current?.revision ?? null, next)).applied) return;
+	}
+}
+
+/** Advance bounded mailbox migration/repair; route callers can retry indexing. */
 async function ensureMigrations(ctx: any): Promise<void> {
-	const all = await ctx.storage.messages.query({ limit: 10000 });
-	const rows = all.items as { id: string; data: any }[];
-
-	// --- Pass 1: sortAt / snoozeUntil (M3) ---
-	let pass1 = 0;
-	for (const row of rows) {
-		if (row.data.sortAt && row.data.snoozeUntil !== undefined) continue;
-		await ctx.storage.messages.put(row.id, {
-			...row.data,
-			sortAt: row.data.sortAt ?? row.data.receivedAt,
-			snoozeUntil: row.data.snoozeUntil ?? null,
-		});
-		pass1++;
-	}
-	if (pass1 > 0) ctx.log.info("emdash-inbox: backfilled sortAt/snoozeUntil", { migrated: pass1 });
-
-	// Re-query so pass 2 sees the pass-1 writes.
-	const afterPass1 = await ctx.storage.messages.query({ limit: 10000 });
-	const freshRows = afterPass1.items as { id: string; data: any }[];
-
-	// Build a lookup by messageId for pass 2 + pass 3.
-	const byMessageId = new Map<string, { messageId: string; threadId: string | null }>();
-	for (const r of freshRows) {
-		byMessageId.set(r.data.messageId, {
-			messageId: r.data.messageId,
-			threadId: r.data.threadId ?? null,
-		});
-	}
-	const lookup = (msgId: string) => byMessageId.get(msgId) ?? null;
-
-	// --- Pass 2: threadId derivation (M4) ---
-	let pass2 = 0;
-	for (const row of freshRows) {
-		if (row.data.threadId) continue;
-
-		// Parse In-Reply-To + References from bodyRaw if we have it.
-		let inReplyToHeader: string | null = null;
-		let references: string[] = [];
-		if (row.data.bodyRaw) {
-			// Simple header scan. Full MIME re-parse via postal-mime is overkill for
-			// a header grep; bodyRaw has the original raw text.
-			inReplyToHeader = parseHeader(row.data.bodyRaw, "In-Reply-To");
-			const refsRaw = parseHeader(row.data.bodyRaw, "References");
-			if (refsRaw) references = refsRaw.split(/\s+/).filter(Boolean);
-		}
-		// Outbound rows don't have bodyRaw but might have data.inReplyTo already
-		// if they were written by a future persistOutbound that we haven't shipped
-		// yet. Prefer the explicit field when present.
-		if (!inReplyToHeader && row.data.inReplyTo) {
-			inReplyToHeader = row.data.inReplyTo;
-		}
-
-		const derived = deriveThreadInfo(
-			row.data.messageId,
-			inReplyToHeader,
-			references,
-			lookup,
-		);
-
-		await ctx.storage.messages.put(row.id, {
-			...row.data,
-			threadId: derived.threadId,
-			inReplyTo: derived.inReplyTo,
-		});
-
-		// Update our in-memory lookup so later rows in the same pass can resolve
-		// ancestors that were just processed.
-		byMessageId.set(row.data.messageId, {
-			messageId: row.data.messageId,
-			threadId: derived.threadId,
-		});
-		pass2++;
-	}
-	if (pass2 > 0) ctx.log.info("emdash-inbox: backfilled threadId", { migrated: pass2 });
-
-	// --- Pass 3: orphan retry (handles reply-before-parent in pass 2) ---
-	if (pass2 > 0) {
-		const afterPass2 = await ctx.storage.messages.query({ limit: 10000 });
-		let pass3 = 0;
-		for (const row of afterPass2.items as { id: string; data: any }[]) {
-			if (row.data.threadId !== row.data.messageId) continue;
-			if (!row.data.inReplyTo) continue;
-
-			const parent = byMessageId.get(row.data.inReplyTo);
-			if (!parent) continue;
-			const inheritedThreadId = parent.threadId ?? parent.messageId;
-			if (inheritedThreadId === row.data.threadId) continue;
-
-			await ctx.storage.messages.put(row.id, {
-				...row.data,
-				threadId: inheritedThreadId,
-			});
-			byMessageId.set(row.data.messageId, {
-				messageId: row.data.messageId,
-				threadId: inheritedThreadId,
-			});
-			pass3++;
-		}
-		if (pass3 > 0) ctx.log.info("emdash-inbox: orphan-retry linked threads", { migrated: pass3 });
-	}
-
-	// --- Pass 4: read backfill (M6) ---
-	let pass4 = 0;
-	const allForRead = await ctx.storage.messages.query({ limit: 10000 });
-	for (const row of allForRead.items as { id: string; data: any }[]) {
-		if (typeof row.data.read === "boolean") continue;
-		await ctx.storage.messages.put(row.id, {
-			...row.data,
-			read: true,   // pre-M6 rows treated as already-seen
-		});
-		pass4++;
-	}
-	if (pass4 > 0) ctx.log.info("emdash-inbox: backfilled read", { migrated: pass4 });
-
-	// --- Pass 5 (M7): drop stale REST-era settings rows ---
-	// Idempotent — ctx.kv.delete is a no-op on missing keys. Lazy-runs every
-	// route invocation; cheap. Removes the accountId/apiToken rows that
-	// pre-M7 installs left behind when the plugin used the CF Email Service
-	// REST API; the binding migration no longer reads them.
-	try {
-		await ctx.kv.delete("settings:accountId");
-		await ctx.kv.delete("settings:apiToken");
-	} catch (err) {
-		ctx.log.warn("emdash-inbox: pass 5 (drop REST settings) failed", {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
-
-	// --- Cron schedule (M3; unchanged) ---
-	if (ctx.cron) {
-		await ctx.cron.schedule("wake-snoozed-messages", {
-			schedule: "*/5 * * * *",
-		});
-	}
+	await ensureMailboxIndex(ctx);
+	if (ctx.cron) await ctx.cron.schedule("wake-snoozed-messages", { schedule: "*/5 * * * *" });
 }
 
 /**
@@ -408,9 +206,11 @@ function parseHeader(raw: string, name: string): string | null {
 
 async function persistInbound(
 	ctx: any,
-	rawMime: string,
+	rawMime: Uint8Array,
 ): Promise<{ msgId: string; from: string }> {
 	const parsed = await PostalMime.parse(rawMime);
+	const bodyBytes = new TextEncoder().encode(parsed.text ?? "").length + new TextEncoder().encode(parsed.html ?? "").length;
+	if (bodyBytes > MAX_BODY_BYTES) throw new AttachmentError("bad_request", "Decoded message body exceeds 256 KiB");
 	const now = new Date().toISOString();
 	const msgId = crypto.randomUUID();
 	const fromAddr = parsed.from?.address ?? "(unknown)";
@@ -423,6 +223,10 @@ async function persistInbound(
 	const toAll = toAllList.length > 0 ? toAllList : [toAddr];
 	const cc = extractAddresses(parsed.cc);
 	const messageId = parsed.messageId ?? `<${msgId}@emdash-inbox.local>`;
+
+	// Replay-safe ingestion: do not write a second copy or attachment set.
+	const duplicate = await ctx.storage.messages.query({ where: { messageId }, limit: 1 });
+	if (duplicate.items?.[0]) return { msgId: duplicate.items[0].id, from: fromAddr };
 
 	// Derive threadId from headers. postal-mime types `inReplyTo` as a single
 	// Message-ID string and `references` as a space-separated string (per
@@ -461,8 +265,14 @@ async function persistInbound(
 
 	const derived = deriveThreadInfo(messageId, inReplyToHeader, references, syncLookup);
 
+	// Without attachments, keep legacy small MIME support on hosts without R2.
+	// Files and large originals require private storage before accepting the mail.
+	const files = parsed.attachments.length > 0 || rawMime.byteLength > 256 * 1024
+		? await storeInboundFiles(ctx, rawMime, parsed) : undefined;
 	const msg: MessageDoc = {
 		messageId,
+		...(files ?? {}),
+		references: references.map(normalizeMessageId).filter((id): id is string => id !== null),
 		direction: "inbound",
 		from: fromAddr,
 		to: toAddr,
@@ -471,7 +281,7 @@ async function persistInbound(
 		subject: parsed.subject ?? "(no subject)",
 		bodyText: parsed.text ?? "",
 		bodyHtml: parsed.html ?? null,
-		bodyRaw: rawMime,
+		bodyRaw: files ? null : new TextDecoder().decode(rawMime),
 		threadId: derived.threadId,
 		receivedAt: now,
 		source: "inbound",
@@ -483,7 +293,7 @@ async function persistInbound(
 		snoozeUntil: null,
 		inReplyTo: derived.inReplyTo,
 	};
-	await ctx.storage.messages.put(msgId, msg);
+	await putMessage(ctx, msgId, msg);
 
 	const contactId = fromAddr.trim().toLowerCase();
 	const existing = (await ctx.storage.contacts.get(contactId)) as
@@ -526,7 +336,8 @@ async function persistInbound(
  *
  * Persistence runs inline (not via `email:afterSend`) — emdash doesn't await
  * afterSend on Workers, so DB writes there hang as the request context tears
- * down. Wrapped so persistence never masks a successful delivery.
+ * down. The durable journal records acceptance before mailbox projection;
+ * recovery never invokes transport.
  *
  * Note: route callers bypass `email:intercept` hooks entirely (no
  * `beforeSend` / `afterSend` fires for route-initiated sends). Acceptable
@@ -535,20 +346,12 @@ async function persistInbound(
  */
 async function deliverEmail(
 	ctx: any,
-	event: {
-		message: {
-			to: string;
-			toAll?: string[];
-			cc?: string[];
-			bcc?: string[];
-			subject: string;
-			text: string;
-			html?: string;
-			inReplyTo?: string;
-		};
-		source: string;
-	},
-): Promise<{ id: string; threadId: string } | null> {
+	event: Parameters<Deliver>[1],
+): Promise<DeliveryResult> {
+	if (event.requestId) {
+		const previous = await findDeliveryRequest(ctx, event.requestId, event.requestPayload ?? event.message);
+		if (previous) return previous;
+	}
 	const kv = ctx.kv as { get<T>(key: string): Promise<T | null> };
 	const senderAddress = await kv.get<string>(SETTINGS.senderAddress);
 
@@ -586,41 +389,57 @@ async function deliverEmail(
 	if (event.message.html) payload.html = event.message.html;
 	if (event.message.cc?.length) payload.cc = event.message.cc;
 	if (event.message.bcc?.length) payload.bcc = event.message.bcc;
-	if (event.message.inReplyTo) {
+	const attachments = await prepareOutgoingAttachments(ctx, event.message.attachments, event.message.text, event.message.html);
+	if (attachments.length) payload.attachments = attachments;
+	let references: string[] = [];
+	const parentId = normalizeMessageId(event.message.inReplyTo);
+	if (parentId) {
+		const parents = await ctx.storage.messages.query({ where: { messageId: parentId }, limit: 1 });
+		const parent = parents.items?.[0]?.data as MessageDoc | undefined;
+		const ancestors = parent?.references ?? (parent?.bodyRaw ? parseHeader(parent.bodyRaw, "References")?.split(/\s+/) : []) ?? [];
+		references = replyReferences(ancestors, parentId);
 		payload.headers = {
-			"In-Reply-To": event.message.inReplyTo,
+			"In-Reply-To": parentId,
+			"References": references.join(" "),
 		};
 	}
 
-	let result: Awaited<ReturnType<EmailBinding["send"]>>;
-	try {
-		result = await binding.send(payload);
-	} catch (err) {
-		const wrapped = wrapBindingError(err);
-		ctx.log.error("emdash-inbox: CF Email binding rejected send", {
-			error: wrapped.message,
-			to: event.message.to,
-			source: event.source,
-		});
-		throw wrapped;
-	}
-
-	ctx.log.info("emdash-inbox: delivered", {
-		to: event.message.to,
-		subject: event.message.subject,
-		source: event.source,
-		messageId: result.messageId,
+	const now = new Date().toISOString();
+	const parentRows = parentId ? await ctx.storage.messages.query({ where: { messageId: parentId }, limit: 1 }) : null;
+	const parent = parentRows?.items?.[0]?.data as MessageDoc | undefined;
+	const snapshot: MessageDoc = {
+		...(event.draftClaim?.snapshot ?? {}),
+		messageId: event.draftClaim?.snapshot.messageId ?? `<outbox-${crypto.randomUUID()}@local>`,
+		direction: "outbound", from: senderAddress,
+		to: event.message.to, toAll: event.message.toAll ?? [event.message.to],
+		cc: event.message.cc ?? [], bcc: event.message.bcc ?? [],
+		subject: event.message.subject, bodyText: event.message.text, bodyHtml: event.message.html ?? null,
+		bodyRaw: null, attachments: event.message.attachments ?? [], references,
+		inReplyTo: parentId, threadId: parentId ? parent?.threadId ?? parentId : null,
+		receivedAt: now, sortAt: now, source: event.source, status: "outbox",
+		pinned: false, read: true, bundleId: null, snoozeUntil: null,
+	};
+	let acceptedByTransport = false;
+	const delivery = await runDelivery(ctx, {
+		snapshot, messageId: event.draftClaim?.id, expectedRevision: event.draftClaim?.revision,
+		requestId: event.requestId, requestPayload: event.requestPayload ?? event.message,
+	}, {
+		transport: async () => {
+			try {
+				const receipt = await binding.send(payload);
+				acceptedByTransport = true;
+				return receipt;
+			}
+			catch (error) { throw wrapBindingError(error); }
+		},
+		projectSent,
 	});
-
-	try {
-		return await persistOutbound(ctx, event, senderAddress);
-	} catch (err) {
-		ctx.log.error("emdash-inbox: failed to persist outbound", {
-			to: event.message.to,
-			error: err instanceof Error ? err.message : String(err),
-		});
-		return null;
+	// Reconciliation/replayed requests do not increment contact counts again.
+	if (acceptedByTransport) {
+		try { await recordOutboundContact(ctx, event.message.to, now); }
+		catch { ctx.log.warn("emdash-inbox: contact statistics update interrupted"); }
 	}
+	return delivery;
 }
 
 /**
@@ -630,11 +449,29 @@ async function deliverEmail(
  * since the former extends the latter.
  */
 function mapComposeError(err: unknown): never {
+	if (err instanceof MailboxInputError) throw PluginRouteError.badRequest(err.message);
+	if (err instanceof AttachmentError) {
+		if (err.code === "not_found") throw PluginRouteError.notFound(err.message);
+		throw PluginRouteError.badRequest(err.message);
+	}
 	if (err instanceof NotFoundError) throw PluginRouteError.notFound(err.message);
 	if (err instanceof ComposeError) throw PluginRouteError.badRequest(err.message);
+	if (err instanceof DeliveryError) throw PluginRouteError.badRequest(err.message);
 	if (err instanceof DeliverError) throw PluginRouteError.badRequest(err.message);
 	const msg = err instanceof Error ? err.message : String(err);
 	throw PluginRouteError.internal(`send failed: ${msg}`);
+}
+
+async function requireMailboxRouteReady(ctx: any): Promise<void> {
+	try { await requireMailboxReady(ctx); } catch (err) { mapComposeError(err); }
+}
+
+function statusPatch(doc: MessageDoc, status: "inbox" | "done" | "snoozed", snoozeUntil?: string): Partial<MessageDoc> {
+	if (doc.status === "draft" || doc.status === "outbox") throw PluginRouteError.badRequest("Drafts cannot change mailbox status");
+	if (status === "snoozed" && (typeof snoozeUntil !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(snoozeUntil) || !Number.isFinite(Date.parse(snoozeUntil)))) throw PluginRouteError.badRequest("snoozeUntil must be an ISO date string");
+	const check = validateTransition(doc.status, status, snoozeUntil);
+	if (!check.ok) throw PluginRouteError.badRequest(check.error);
+	return { status, snoozeUntil: status === "snoozed" ? new Date(snoozeUntil!).toISOString() : null, ...(status === "inbox" ? {sortAt: new Date().toISOString()} : {}) };
 }
 
 /**
@@ -653,9 +490,10 @@ function mapComposeError(err: unknown): never {
  * auth implicitly via the Worker's CF account.
  */
 export function createPlugin() {
+	const native = nativeInboxMcp(deliverEmail, ensureMigrations, mapComposeError, projectSent);
 	return definePlugin({
 		id: "emdash-inbox",
-		version: "0.7.0",
+		version: VERSION,
 
 		capabilities: [
 			"email:provide",
@@ -668,8 +506,13 @@ export function createPlugin() {
 		],
 
 		storage: {
+			...mailboxCollections,
+			...attachmentCollections,
+			...deliveryCollections,
 			messages: {
 				indexes: [
+					...mailboxMessageIndexes,
+					...deliveryMessageIndexes,
 					"receivedAt",
 					"sortAt",
 					"snoozeUntil",
@@ -701,24 +544,10 @@ export function createPlugin() {
 
 				const now = new Date().toISOString();
 
-				const due = await (ctx.storage as any).messages.query({
-					where: { status: "snoozed" },
-					limit: 500,
-				});
-
-				let woken = 0;
-				for (const row of due.items as { id: string; data: any }[]) {
-					if (!row.data.snoozeUntil) continue;
-					if (row.data.snoozeUntil > now) continue;
-
-					await (ctx.storage as any).messages.put(row.id, {
-						...row.data,
-						status: "inbox",
-						sortAt: now,
-						snoozeUntil: null,
-					});
-					woken++;
-				}
+				const woken = await wakeSnoozed(ctx, now);
+				await ensureMailboxIndex(ctx);
+				await retryAttachmentCleanup(ctx);
+				await reconcileDeliveries(ctx, projectSent);
 
 				if (woken > 0) {
 					ctx.log.info("emdash-inbox: woke snoozed messages", { woken });
@@ -728,7 +557,12 @@ export function createPlugin() {
 			"email:deliver": {
 				exclusive: true,
 				handler: async (event, ctx) => {
-					await deliverEmail(ctx, event);
+					const delivery = await deliverEmail(ctx, event);
+					if (delivery.deliveryStatus !== "sent" && !delivery.providerAccepted) {
+						throw new DeliverError(delivery.deliveryStatus === "failed"
+							? `Email was rejected; review its saved draft (${delivery.attemptId}).`
+							: `Email delivery needs Outbox review before retrying (${delivery.attemptId}).`);
+					}
 				},
 			},
 
@@ -743,35 +577,50 @@ export function createPlugin() {
 			},
 		},
 
+		mcp: native.mcp,
 		routes: {
+			...native.routes,
+			"threads/list": {
+				permission: "plugins:manage",
+				handler: async (ctx) => {
+					try { return await listThreadPage(ctx, (ctx.input ?? {}) as any); }
+					catch (err) { return mapComposeError(err); }
+				},
+			},
+			"threads/action": {
+				permission: "plugins:manage",
+				handler: async (ctx) => {
+					const input = (ctx.input ?? {}) as any;
+					await requireMailboxRouteReady(ctx);
+					if (typeof input.threadId !== "string" || !input.threadId) throw PluginRouteError.badRequest("threadId is required");
+					if (input.action === "pin" && typeof input.pinned === "boolean") return mutateThread(ctx, input.threadId, () => ({ pinned: input.pinned }));
+					if (input.action === "read" && typeof input.read === "boolean") return mutateThread(ctx, input.threadId, () => ({ read: input.read }));
+					if (input.action === "status" && ["inbox", "done", "snoozed"].includes(input.status)) {
+						return mutateThread(ctx, input.threadId, (doc) => statusPatch(doc, input.status, input.snoozeUntil));
+					}
+					throw PluginRouteError.badRequest("Invalid thread action");
+				},
+			},
+			"attachments/upload": {
+				permission: "plugins:manage",
+				handler: async (ctx) => { try { return await uploadDraftAttachment(ctx, ctx.input as any); } catch (err) { return mapComposeError(err); } },
+			},
+			"attachments/remove": {
+				permission: "plugins:manage",
+				handler: async (ctx) => { try { return await removeDraftAttachment(ctx, ctx.input as any); } catch (err) { return mapComposeError(err); } },
+			},
+			"attachments/read": {
+				permission: "plugins:manage",
+				handler: async (ctx) => { try { return await readAttachment(ctx, ctx.input as any); } catch (err) { return mapComposeError(err); } },
+			},
 			"messages/list": {
-				handler: async (routeCtx) => {
-					// Lazy setup: same idempotent migration pass as the other admin routes.
-					await ensureMigrations(routeCtx);
-
-					const input = routeCtx.input as
-						| { status?: unknown; limit?: unknown; cursor?: unknown }
-						| null;
-
-					const filter: StatusFilter =
-						input?.status === "snoozed" || input?.status === "done" || input?.status === "all"
-							? input.status
-							: "inbox";
-
-					// limit / cursor accepted for API compatibility; M6 ignores them and
-					// returns all threads. Pagination is a documented pre-1.0 limitation.
-					void input?.limit;
-					void input?.cursor;
-
-					const senderAddress =
-						(await routeCtx.kv.get<string>(SETTINGS.senderAddress)) ?? "";
-
-					const all = await (routeCtx.storage as any).messages.query({ limit: 10000 });
-					const messages = all.items as Array<{ id: string; data: any }>;
-
-					const items = aggregateThreads(messages, filter, senderAddress);
-
-					return { items, cursor: undefined };
+				handler: async (ctx) => {
+					await ensureMigrations(ctx);
+					const input = (ctx.input ?? {}) as { status?: StatusFilter };
+					const sender = await ctx.kv.get<string>(SETTINGS.senderAddress) ?? "";
+					const rows = await allRows<MessageDoc>((ctx.storage as any).messages);
+					const items = aggregateThreads(rows, input.status ?? "inbox", sender).map((t) => ({...t, latest: publicMessage(t.latest), previous: t.previous ? publicMessage(t.previous) : null}));
+					return { items };
 				},
 			},
 
@@ -785,14 +634,8 @@ export function createPlugin() {
 							"body must include id:string and pinned:boolean",
 						);
 					}
-					const row = await (routeCtx.storage as any).messages.get(id);
-					if (!row) {
-						throw PluginRouteError.notFound(`message ${id} not found`);
-					}
-					await (routeCtx.storage as any).messages.put(id, {
-						...row,
-						pinned,
-					});
+					const updated = await mutateMessage(routeCtx, id, () => ({ pinned }));
+					if (!updated) throw PluginRouteError.notFound(`message ${id} not found`);
 					return { ok: true };
 				},
 			},
@@ -814,39 +657,15 @@ export function createPlugin() {
 						);
 					}
 
-					const row = await (routeCtx.storage as any).messages.get(id);
-					if (!row) {
-						throw PluginRouteError.notFound(`message ${id} not found`);
-					}
-
-					const check = validateTransition(row.status, status, snoozeUntil);
-					if (!check.ok) {
-						throw PluginRouteError.badRequest(check.error);
-					}
-
-					const now = new Date().toISOString();
-					const next = { ...row };
-
-					if (status === "inbox") {
-						next.status = "inbox";
-						next.sortAt = now;
-						next.snoozeUntil = null;
-					} else if (status === "snoozed") {
-						next.status = "snoozed";
-						next.snoozeUntil = snoozeUntil!;
-					} else if (status === "done") {
-						next.status = "done";
-						next.snoozeUntil = null;
-					}
-
-					await (routeCtx.storage as any).messages.put(id, next);
+					const next = await mutateMessage(routeCtx, id, (doc) => statusPatch(doc, status, snoozeUntil));
+					if (!next) throw PluginRouteError.notFound(`message ${id} not found`);
 					return { ok: true, status: next.status };
 				},
 			},
 
 			"messages/thread": {
 				handler: async (routeCtx) => {
-					await ensureMigrations(routeCtx);
+					await requireMailboxRouteReady(routeCtx);
 
 					const input = routeCtx.input as { id?: unknown } | null;
 					const id = typeof input?.id === "string" ? input.id : null;
@@ -860,39 +679,10 @@ export function createPlugin() {
 					}
 
 					const threadId = row.threadId ?? row.messageId;
-					const result = await (routeCtx.storage as any).messages.query({
-						where: { threadId },
-						orderBy: { receivedAt: "asc" },
-						limit: 500,
-					});
-
-					// Drafts are invisible outside the drafts surfaces (M8 §Data model):
-					// exclude before both the mark-read side effect and the response so a
-					// draft is never marked read nor returned as part of the thread.
-					const items = ((result.items ?? []) as { id: string; data: any }[]).filter(
-						(r) => !isDraftRow(r),
-					);
-
-					// Side-effect: mark every unread message in this thread read. Wrapped so a
-					// write failure doesn't fail the fetch — same defensive pattern as
-					// persistOutbound inside deliverEmail. Returned items are the pre-write
-					// snapshot; the inbox list re-fetches on back-navigation and sees the
-					// updated state.
-					try {
-						for (const r of items) {
-							if (r.data.read === false) {
-								await (routeCtx.storage as any).messages.put(r.id, {
-									...r.data,
-									read: true,
-								});
-							}
-						}
-					} catch (err) {
-						routeCtx.log.error("emdash-inbox: failed to mark thread read", {
-							threadId,
-							error: err instanceof Error ? err.message : String(err),
-						});
-					}
+					const rows = await loadThreadRows(routeCtx, threadId);
+					try { await mutateThread(routeCtx, threadId, doc => doc.read ? null : ({ read: true })); }
+					catch { routeCtx.log.warn("emdash-inbox: thread loaded but mark-read failed", { threadId }); }
+					const items = rows.map((r) => ({ id: r.id, data: publicMessage(r.data) }));
 
 					return { items };
 				},
@@ -900,10 +690,10 @@ export function createPlugin() {
 
 			"messages/reply": {
 				handler: async (routeCtx) => {
-					await ensureMigrations(routeCtx);
+					await requireMailboxRouteReady(routeCtx);
 
 					const input = routeCtx.input as
-						| { inReplyTo?: unknown; to?: unknown; cc?: unknown; subject?: unknown; text?: unknown; html?: unknown }
+						| { requestId?: string; inReplyTo?: unknown; to?: unknown; cc?: unknown; subject?: unknown; text?: unknown; html?: unknown }
 						| null;
 
 					const inReplyTo = typeof input?.inReplyTo === "string" ? input.inReplyTo.trim() : "";
@@ -955,7 +745,9 @@ export function createPlugin() {
 					// HTML to a known element set. Tracked in deferred list.
 
 					try {
-						await deliverEmail(routeCtx, {
+						return await deliverEmail(routeCtx, {
+							requestId: input?.requestId,
+							requestPayload: { operation: "reply-message", ...input, requestId: undefined },
 							message: {
 								to: toList[0],
 								toAll: toList,
@@ -987,9 +779,31 @@ export function createPlugin() {
 				},
 			},
 
+			"deliveries/list": {
+				permission: "plugins:manage", input: listDeliveriesInput,
+				handler: async (ctx) => {
+					try { await reconcileDeliveries(ctx, projectSent); return await listDeliveries(ctx, listDeliveriesInput.parse(ctx.input)); }
+					catch (error) { return mapComposeError(error); }
+				},
+			},
+			"deliveries/reconcile": {
+				permission: "plugins:manage",
+				handler: async (ctx) => {
+					try { return await reconcileDeliveries(ctx, projectSent); }
+					catch (error) { return mapComposeError(error); }
+				},
+			},
+			"deliveries/resolve": {
+				permission: "plugins:manage", input: resolveDeliveryInput,
+				handler: async (ctx) => {
+					try { return await resolveDelivery(ctx, projectSent, resolveDeliveryInput.parse(ctx.input)); }
+					catch (error) { return mapComposeError(error); }
+				},
+			},
+
 			"messages/reply-all": {
 				handler: async (routeCtx) => {
-					await ensureMigrations(routeCtx);
+					await requireMailboxRouteReady(routeCtx);
 					const input = (routeCtx.input ?? {}) as Omit<ReplyInput, "replyAll">;
 					try {
 						return await replySend(routeCtx, deliverEmail, { ...input, replyAll: true });
@@ -1003,7 +817,9 @@ export function createPlugin() {
 				handler: async (routeCtx) => {
 					await ensureMigrations(routeCtx);
 					try {
-						return await draftSave(routeCtx, (routeCtx.input ?? {}) as DraftInput);
+						const input = (routeCtx.input ?? {}) as DraftInput;
+						if (input.threadId) await requireMailboxRouteReady(routeCtx);
+						return await draftSave(routeCtx, input);
 					} catch (err) {
 						mapComposeError(err);
 					}
@@ -1013,12 +829,12 @@ export function createPlugin() {
 			"messages/draft-send": {
 				handler: async (routeCtx) => {
 					await ensureMigrations(routeCtx);
-					const input = (routeCtx.input ?? {}) as { draftId?: string; edits?: Partial<ComposeInput> };
+					const input = (routeCtx.input ?? {}) as { draftId?: string; edits?: Partial<ComposeInput>; requestId?: string };
 					if (typeof input.draftId !== "string" || input.draftId === "") {
 						throw PluginRouteError.badRequest("draftId: required non-empty string");
 					}
 					try {
-						return await draftSend(routeCtx, deliverEmail, { draftId: input.draftId, edits: input.edits });
+						return await draftSend(routeCtx, deliverEmail, { draftId: input.draftId, edits: input.edits, requestId: input.requestId });
 					} catch (err) {
 						mapComposeError(err);
 					}
@@ -1050,6 +866,7 @@ export function createPlugin() {
 							bodyText: r.data.bodyText,
 							cc: r.data.cc ?? [],
 							bcc: r.data.bcc ?? [],
+							attachments: publicMessage(r.data).attachments ?? [],
 						})),
 					};
 				},
@@ -1062,9 +879,9 @@ export function createPlugin() {
 				// reaches it has full inbox access. See `lib/inboxMcpHandlers.ts`
 				// for the choice of manual JSON-RPC dispatch over the SDK runtime.
 				handler: async (routeCtx) => {
-					await ensureMigrations(routeCtx);
+					if ((routeCtx.input as {method?: string})?.method === "tools/call") await ensureMigrations(routeCtx);
 					const { dispatchMcpRequest } = await import("./lib/inboxMcpHandlers");
-					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {}, deliverEmail);
+					return dispatchMcpRequest(routeCtx, routeCtx.input ?? {}, deliverEmail, projectSent);
 				},
 			},
 
@@ -1137,19 +954,16 @@ export function createPlugin() {
 						throw PluginRouteError.unauthorized();
 					}
 
-					// emdash's dispatcher pre-parses the body as JSON (even for empty/
-					// non-JSON content). We can't re-read request.text() because the
-					// body stream is already consumed. So the protocol is: POST JSON
-					// `{ "rawMime": "<RFC822>" }`. The email Worker that forwards
-					// inbound mail is responsible for wrapping the raw MIME in that
-					// envelope.
-					const input = routeCtx.input as { rawMime?: unknown } | null;
-					const rawMime = input?.rawMime;
-					if (typeof rawMime !== "string" || rawMime.length === 0) {
-						throw PluginRouteError.badRequest(
-							"body must be JSON with a non-empty `rawMime` string field",
-						);
-					}
+					const input = routeCtx.input as { rawMime?: unknown; rawMimeBase64?: unknown } | null;
+					let rawMime: Uint8Array;
+					try {
+						if (typeof input?.rawMimeBase64 === "string") {
+							if (input.rawMimeBase64.length > Math.ceil(MAX_INBOUND_BYTES / 3) * 4) throw new Error("Inbound message exceeds 8 MiB");
+							rawMime = decodeBase64(input.rawMimeBase64, MAX_INBOUND_BYTES);
+						} else if (typeof input?.rawMime === "string") rawMime = new TextEncoder().encode(input.rawMime);
+						else throw new Error("rawMimeBase64 or rawMime is required");
+						if (!rawMime.byteLength || rawMime.byteLength > MAX_INBOUND_BYTES) throw new Error("Inbound message must be between 1 byte and 8 MiB");
+					} catch (err) { throw PluginRouteError.badRequest(err instanceof Error ? err.message : "Invalid MIME envelope"); }
 
 					try {
 						const { msgId, from } = await persistInbound(
@@ -1163,6 +977,7 @@ export function createPlugin() {
 						return { ok: true, id: msgId };
 					} catch (err) {
 						if (err instanceof PluginRouteError) throw err;
+						if (err instanceof AttachmentError) mapComposeError(err);
 						routeCtx.log.error("emdash-inbox: inbound parse/persist failed", {
 							error: err instanceof Error ? err.message : String(err),
 						});

@@ -3,7 +3,7 @@
  * plugin route.
  *
  * Cloudflare Email Routing calls `email(message, env, ctx)` when mail arrives
- * for a configured address. We stream the raw RFC822 MIME to the host's
+ * for a configured address. We preserve the raw RFC822 MIME bytes and POST a base64 envelope to the host's
  * plugin endpoint, which parses and persists it.
  *
  * Deploy this as a separate Worker (see wrangler.jsonc.example alongside).
@@ -45,7 +45,15 @@ export default {
 			return;
 		}
 
-		const rawMime = await new Response(message.raw).text();
+		if (message.rawSize > 8 * 1024 * 1024) {
+			message.setReject("Inbox messages must be at most 8 MiB");
+			return;
+		}
+		const bytes = new Uint8Array(await new Response(message.raw).arrayBuffer());
+		if (bytes.length > 8 * 1024 * 1024) { message.setReject("Inbox messages must be at most 8 MiB"); return; }
+		const parts: string[] = [];
+		for (let offset = 0; offset < bytes.length; offset += 8192) parts.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
+		const rawMimeBase64 = btoa(parts.join(""));
 
 		const response = await fetch(env.INBOUND_URL, {
 			method: "POST",
@@ -53,7 +61,7 @@ export default {
 				"Content-Type": "application/json",
 				"X-Inbound-Secret": env.INBOUND_SECRET,
 			},
-			body: JSON.stringify({ rawMime }),
+			body: JSON.stringify({ rawMimeBase64 }),
 		});
 
 		if (!response.ok) {

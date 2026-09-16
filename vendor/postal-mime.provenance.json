@@ -1,0 +1,9 @@
+{
+  "package": "postal-mime",
+  "version": "2.7.4",
+  "upstream": "https://github.com/postalsys/postal-mime",
+  "license": "MIT-0",
+  "patch": "patches/postal-mime@2.7.4.patch",
+  "patchSha256": "5139bb05428f2b4db53f8c383c4f7aead7f4a5418efa243e901c3f6f9cabe3b1",
+  "bundleSha256": "65dc3b5fe1d339f82e4a54c4c3748365f37e15385de8ca9f70a1821d26e706b1"
+}

@@ -1,3 +1,4 @@
+import { publicAttachment, type PublicAttachment } from "./attachmentMetadata";
 import type { MessageDoc } from "../index";
 
 /**
@@ -13,6 +14,7 @@ export interface DraftSummary {
 	snippet: string;
 	updatedAt: string;
 	threadId: string | null;
+	attachments?: PublicAttachment[];
 }
 
 export function draftSummaryOf(row: { id: string; data: MessageDoc }): DraftSummary {
@@ -24,5 +26,6 @@ export function draftSummaryOf(row: { id: string; data: MessageDoc }): DraftSumm
 		snippet: d.bodyText.replace(/\s+/g, " ").trim().slice(0, 120),
 		updatedAt: d.sortAt,
 		threadId: d.threadId,
+		...(d.attachments?.length ? { attachments: d.attachments.map(publicAttachment) } : {}),
 	};
 }

@@ -1,17 +1,20 @@
+import type { PublicAttachment } from "./attachments";
 import type { MessageDoc } from "../index";
 import { deriveParticipantChips, type ParticipantChip } from "./participantChips";
 
 export type StatusFilter = "inbox" | "snoozed" | "done" | "all";
 
+export type MessageView = Omit<MessageDoc, "bodyRaw" | "rawObjectKey" | "attachments"> & { attachments?: PublicAttachment[] };
+
 export interface ThreadSummary {
 	id: string;
 	threadId: string;
 	openMessageId: string;
-	latest: MessageDoc;
-	previous: MessageDoc | null;
+	latest: MessageView;
+	previous: MessageView | null;
 	messageCount: number;
 	unreadCount: number;
-	messageIds: string[];
+	messageIds?: string[];
 	participants: ParticipantChip[];
 	pinned: boolean;
 	sortAt: string;
@@ -33,7 +36,7 @@ interface MessageRow {
  * `snooze_thread`/`mark_done` handlers.
  */
 export function isDraftRow(row: { data: { status: string } }): boolean {
-	return row.data.status === "draft";
+	return row.data.status === "draft" || row.data.status === "outbox";
 }
 
 /**

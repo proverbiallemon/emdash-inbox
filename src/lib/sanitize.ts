@@ -1,40 +1,75 @@
 import DOMPurify from "dompurify";
 
-const INLINE_URI = /^(data|cid):/i;
+const INLINE_URI = /^(?:cid:[^\s]+|data:image\/(?:png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+)$/i;
 const HTTP_URI = /^https?:/i;
+
+// Email markup is rendered in the admin document, so source CSS and other
+// resource-loading elements cannot be made safe by filtering img.src alone.
+const EMAIL_ALLOWED_TAGS = [
+	"body", "a", "abbr", "address", "b", "bdi", "bdo", "blockquote", "br",
+	"caption", "center", "cite", "code", "col", "colgroup", "dd", "del", "div",
+	"dl", "dt", "em", "figcaption", "figure", "font", "h1", "h2", "h3", "h4",
+	"h5", "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p", "pre",
+	"q", "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "table",
+	"tbody", "td", "tfoot", "th", "thead", "tr", "u", "ul", "var", "wbr",
+];
+
+const EMAIL_ALLOWED_ATTR = [
+	"href", "src", "alt", "title", "width", "height", "align", "valign", "border",
+	"cellpadding", "cellspacing", "colspan", "rowspan", "bgcolor", "color", "face",
+	"size", "dir", "lang", "start", "reversed", "scope",
+];
 
 /**
  * Sanitize HTML from an inbound email for safe rendering in the admin.
  *
- * Strips scripts, event handlers, dangerous protocols (DOMPurify defaults),
- * plus two email-specific rules:
- *   1. External image src attributes are blanked unless caller opts in via
- *      allowExternalImages. Inline images (data: / cid:) are always kept.
- *   2. External http(s) <a> links gain rel="noopener noreferrer nofollow".
- *      mailto: and other schemes are left alone.
+ * Keeps structural formatting and table layout, with no source CSS, classes,
+ * IDs, SVG, media, embedded documents, or responsive image sources. This
+ * prevents network loading and source styles from affecting the admin page.
+ * Only img.src may load a resource: raster data: and cid: images are kept;
+ * external images require allowExternalImages. DOMPurify still rejects unsafe
+ * protocols. External http(s) links gain rel="noopener noreferrer nofollow".
  *
  * Returns a safe HTML string intended for dangerouslySetInnerHTML on a
- * plain <div>. No iframe isolation — inline styles from the source email
- * may affect layout. Iframe sandboxing is a future polish.
+ * plain <div>. Removing CSS intentionally sacrifices some email styling.
  */
 export function sanitizeEmailHtml(
 	raw: string,
 	opts: { allowExternalImages: boolean },
 ): string {
+	return prepareEmailHtml(raw, opts).html;
+}
+
+/** Prepare the email body and the image-reveal banner in one sanitization pass. */
+export function prepareEmailHtml(
+	raw: string,
+	opts: { allowExternalImages: boolean },
+): { html: string; hasExternalImages: boolean } {
+	let hasExternalImages = false;
 	// Clean up any hooks from prior invocations in the same session.
 	DOMPurify.removeAllHooks();
 
-	DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
-		if (
-			data.attrName === "src" &&
-			!INLINE_URI.test(data.attrValue) &&
-			!opts.allowExternalImages
-		) {
+	DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+		if (data.attrName === "src" && node.nodeName !== "IMG") {
+			data.keepAttr = false;
+		}
+		if (data.attrName === "href" && node.nodeName !== "A") {
 			data.keepAttr = false;
 		}
 	});
 
 	DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+		if (node.nodeName === "IMG") {
+			const image = node as Element;
+			const src = image.getAttribute("src");
+			if (src !== null && !INLINE_URI.test(src)) {
+				// DOMPurify has already decoded attributes and rejected unsafe
+				// protocols. Unsupported inline payloads never become revealable.
+				const external = src !== "" && !/^(?:data|cid):/i.test(src);
+				hasExternalImages ||= external;
+				if (!external || !opts.allowExternalImages) image.removeAttribute("src");
+			}
+		}
 		if (node.nodeName === "A") {
 			const href = (node as Element).getAttribute("href") ?? "";
 			if (HTTP_URI.test(href)) {
@@ -43,9 +78,17 @@ export function sanitizeEmailHtml(
 		}
 	});
 
-	const out = DOMPurify.sanitize(raw);
-	DOMPurify.removeAllHooks();
-	return out;
+	try {
+		const html = DOMPurify.sanitize(raw, {
+			ALLOWED_TAGS: EMAIL_ALLOWED_TAGS,
+			ALLOWED_ATTR: EMAIL_ALLOWED_ATTR,
+			ALLOW_DATA_ATTR: false,
+			ALLOW_ARIA_ATTR: false,
+		});
+		return { html, hasExternalImages };
+	} finally {
+		DOMPurify.removeAllHooks();
+	}
 }
 
 const COMPOSE_ALLOWED_TAGS = [

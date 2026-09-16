@@ -1,19 +1,19 @@
 # Contributing to emdash-inbox
 
-Thanks for your interest. emdash-inbox is pre-alpha — the codebase is being built out against EmDash v0.5.0, which is itself evolving quickly. Expect breaking changes between commits.
+Thanks for your interest. emdash-inbox is pre-alpha — the codebase is being built out against EmDash v0.38.0, which is itself evolving quickly. Expect breaking changes between commits.
 
 ## Getting Started
 
 1. Fork the repository
 2. Clone your fork: `git clone https://github.com/<your-username>/emdash-inbox.git`
-3. Install dependencies (once we have any): `pnpm install`
+3. Use Node 24.15+ (24 LTS) and pnpm 8.15.1, then install: `pnpm install --frozen-lockfile`
 4. See the README for the current roadmap and what's buildable
 
 ## Making Changes
 
 1. Create a branch from `main`: `git checkout -b my-feature`
 2. Make your changes
-3. Run `pnpm test` and `pnpm tsc --noEmit` (once these scripts exist)
+3. Run `pnpm typecheck`, `pnpm test`, and `pnpm validate` (build + native plugin checks). The integration suite uses temporary SQLite databases and a test email transport; it does not send mail.
 4. Commit with a clear message and push your branch
 5. Open a pull request against `main`
 
