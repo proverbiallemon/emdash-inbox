@@ -27,7 +27,8 @@ import { nativeInboxMcp } from "./lib/nativeMcp";
 import { listDeliveriesInput, resolveDeliveryInput } from "./lib/inboxMcpTools";
 import { normalizeMessageId, replyReferences } from "./lib/messageIdentity";
 import { VERSION } from "./version";
-import { requireMailboxReady, MailboxInputError, mailboxCollections, mailboxMessageIndexes, allRows, loadThreadRows, putMessage, mutateMessage, mutateThread, ensureMailboxIndex, listThreadPage, wakeSnoozed } from "./lib/mailboxStore";
+import { readInboxPreferences, saveInboxPreferences } from "./lib/uiPreferences";
+import { requireMailboxReady, MailboxInputError, mailboxCollections, mailboxMessageIndexes, allRows, loadThreadRows, putMessage, mutateMessage, mutateThread, ensureMailboxIndex, listThreadPage, searchMessagePage, wakeSnoozed } from "./lib/mailboxStore";
 import { attachmentCollections, AttachmentError, type StoredAttachment, publicMessage, uploadDraftAttachment, removeDraftAttachment, readAttachment, storeInboundFiles, prepareOutgoingAttachments, retryAttachmentCleanup, decodeBase64, MAX_INBOUND_BYTES, MAX_BODY_BYTES } from "./lib/attachments";
 
 /**
@@ -580,6 +581,15 @@ export function createPlugin() {
 		mcp: native.mcp,
 		routes: {
 			...native.routes,
+			"ui/preferences": { permission: "plugins:manage", handler: readInboxPreferences },
+			"ui/preferences-save": { permission: "plugins:manage", handler: saveInboxPreferences },
+			"messages/search": {
+				permission: "plugins:manage",
+				handler: async (ctx) => {
+					try { return await searchMessagePage(ctx, (ctx.input ?? {}) as any); }
+					catch (err) { return mapComposeError(err); }
+				},
+			},
 			"threads/list": {
 				permission: "plugins:manage",
 				handler: async (ctx) => {

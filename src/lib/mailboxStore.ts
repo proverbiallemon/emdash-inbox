@@ -70,7 +70,7 @@ interface ThreadIndex {
 interface SearchDocument { messageKey: string; subject: string; body: string }
 interface MigrationState { version: number; cursor?: string; complete: boolean }
 interface Page<T> { items: T[]; cursor?: string; hasMore: boolean; indexing?: boolean }
-export interface ThreadPageInput { status?: StatusFilter; limit?: number; cursor?: string }
+export interface ThreadPageInput { status?: StatusFilter; pinnedOnly?: boolean; limit?: number; cursor?: string }
 export interface SearchPageInput { query: string; limit?: number; cursor?: string }
 export type MessagePatch = (message: MessageDoc) => Partial<MessageDoc> | null;
 export class MailboxInputError extends Error {
@@ -324,11 +324,15 @@ export async function listThreadPage(ctx: any, input: ThreadPageInput = {}) {
 	const status = input.status ?? "inbox";
 	if (!["inbox", "snoozed", "done", "all"].includes(status)) throw new MailboxInputError("Invalid mailbox status");
 	const limit = pageLimit(input.limit, 25);
-	const after = decodeCursor(input.cursor, "threads", status);
+	if (input.pinnedOnly !== undefined && typeof input.pinnedOnly !== "boolean") throw new MailboxInputError("pinnedOnly must be a boolean");
+	const filter = input.pinnedOnly ? `${status}:pinned` : status;
+	const after = decodeCursor(input.cursor, "threads", filter);
 	if (!(await ensureMailboxIndex(ctx)).complete) return indexingPage<any>();
 	const field = status === "snoozed" ? "snoozeKey" : "listKey";
 	const result = await ctx.storage.threads.query({
-		where: { ...(status === "all" ? {} : { status }), ...(after ? { [field]: { gt: after } } : {}) },
+		// Both sort keys begin with the pin rank. Bound the existing index instead
+		// of filtering a page in memory (which could hide later pinned threads).
+		where: { ...(status === "all" ? {} : { status }), ...((after || input.pinnedOnly) ? { [field]: { ...(after ? { gt: after } : {}), ...(input.pinnedOnly ? { lt: "1|" } : {}) } } : {}) },
 		orderBy: { [field]: "asc" }, limit,
 	});
 	const rows = result.items as MessageRow<ThreadIndex>[];
@@ -350,7 +354,7 @@ export async function listThreadPage(ctx: any, input: ThreadPageInput = {}) {
 			pinned: data.pinned, sortAt: data.sortAt, snoozeUntil: data.snoozeUntil,
 		};
 	});
-	const cursor = result.hasMore && rows.length ? encodeCursor({ v: INDEX_VERSION, kind: "threads", filter: status, after: rows.at(-1)!.data[field] }) : undefined;
+	const cursor = result.hasMore && rows.length ? encodeCursor({ v: INDEX_VERSION, kind: "threads", filter, after: rows.at(-1)!.data[field] }) : undefined;
 	return { items, cursor, hasMore: !!result.hasMore };
 }
 

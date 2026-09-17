@@ -4,7 +4,7 @@ import { OptionsRepository, PluginStorageRepository } from "emdash";
 import type { MessageDoc } from "../src/index";
 import { runInboxToolHandler } from "../src/lib/inboxMcpHandlers";
 import { createNativeHost } from "./helpers/nativeHost";
-import { allRows, ensureMailboxIndex, mutateMessage, putMessage, wakeSnoozed } from "../src/lib/mailboxStore";
+import { allRows, ensureMailboxIndex, listThreadPage, mutateMessage, putMessage, wakeSnoozed } from "../src/lib/mailboxStore";
 
 vi.mock("cloudflare:workers", () => ({ env: { EMAIL: { send: vi.fn() } } }));
 
@@ -79,6 +79,19 @@ describe("complete mailbox operations against EmDash SQLite", () => {
 		while (page.hasMore) { page = await readyPage({ limit: 25, cursor: page.cursor }); all.push(...page.items); }
 		expect(all).toHaveLength(120);
 		expect(new Set(all.map((item: any) => item.id)).size).toBe(120);
+	});
+
+	it("pages only pinned threads through the existing sort index and rejects another view’s cursor", async () => {
+		for (let i = 0; i < 115; i++) await host.messages.put(`pin${i}`, message(i, { threadId: `<pin${i}@example.com>`, pinned: i % 2 === 0 }));
+		await readyPage();
+		const input = {status: "all" as const, pinnedOnly: true, limit: 17};
+		let page = await listThreadPage(ctx, input);
+		await expect(listThreadPage(ctx, { status: "all", cursor: page.cursor })).rejects.toThrow("Invalid pagination cursor");
+		const items = [...page.items];
+		while (page.hasMore) { page = await listThreadPage(ctx, {...input, cursor: page.cursor}); items.push(...page.items); }
+		expect(items).toHaveLength(58);
+		expect(items.every(item => item.pinned)).toBe(true);
+		expect(new Set(items.map(item => item.threadId)).size).toBe(58);
 	});
 
 	it("applies thread mutations to every message and leaves reply drafts unchanged", async () => {

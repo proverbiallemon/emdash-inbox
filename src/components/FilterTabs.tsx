@@ -1,43 +1,12 @@
-import * as React from "react";
-
 export type StatusFilter = "inbox" | "snoozed" | "done" | "all";
-export type TabId = StatusFilter | "drafts" | "outbox";
-
-const TABS: { id: TabId; label: string }[] = [
-	{ id: "inbox", label: "Inbox" },
-	{ id: "snoozed", label: "Snoozed" },
-	{ id: "done", label: "Done" },
-	{ id: "drafts", label: "Drafts" },
-	{ id: "outbox", label: "Outbox" },
-	{ id: "all", label: "All" },
+export type TabId = StatusFilter | "pinned" | "drafts" | "outbox";
+export const MAIL_TABS: { id: TabId; label: string }[] = [
+ { id: "inbox", label: "Inbox" }, { id: "pinned", label: "Pinned" },
+ { id: "snoozed", label: "Snoozed" }, { id: "drafts", label: "Drafts" },
+ { id: "outbox", label: "Outbox" }, { id: "done", label: "Done" }, { id: "all", label: "All mail" },
 ];
-
-interface Props {
-	current: TabId;
-	onChange: (next: TabId) => void;
-}
-
-export function FilterTabs({ current, onChange }: Props) {
-	return (
-		<div className="flex flex-wrap gap-1 border-b">
-			{TABS.map((tab) => {
-				const active = tab.id === current;
-				return (
-					<button
-						key={tab.id}
-						type="button"
-						onClick={() => onChange(tab.id)}
-						className={
-							"px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors " +
-							(active
-								? "border-foreground text-foreground"
-								: "border-transparent text-muted-foreground hover:text-foreground")
-						}
-					>
-						{tab.label}
-					</button>
-				);
-			})}
-		</div>
-	);
+export function FilterTabs({ current, onChange }: { current: TabId; onChange: (next: TabId) => void }) {
+ return <nav className="dl-nav" aria-label="Mailbox folders">{MAIL_TABS.map(tab =>
+  <button type="button" key={tab.id} aria-current={current === tab.id ? "page" : undefined} onClick={() => onChange(tab.id)}>{tab.label}</button>,
+ )}</nav>;
 }

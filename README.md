@@ -96,6 +96,14 @@ pnpm validate
 
 `validate` builds both package entrypoints and checks native exports, versions, registration, and routes. Integration tests run EmDash's real SQLite migrations, plugin dispatch, conditional storage, cron hook, and published MCP HTTP adapter. Email delivery is replaced with a test transport; no real mail is sent. GitHub Actions runs these checks on pushes and pull requests.
 
+### Daylight UI preview
+
+The Daylight mail UI adds account-specific Top/Left navigation, an expanded window with dashboard return, responsive conversation and compose views, and private attachment previews. See the [design handoff and coverage](docs/daylight-design.md) for implemented behavior and future tools.
+
+Daylight is deployed on PBWeb with EmDash 0.38.0. The [September 17 rollout report](docs/daylight-production-2026-09-17.md) records the exact build, live checks, and remaining acceptance limits.
+
+Run `pnpm dev:preview` from a source checkout to open the real UI with synthetic mail at `http://127.0.0.1:4317/`. The preview sends no email and resets on refresh. Production still uses EmDash's authenticated plugin routes.
+
 ## Roadmap
 
 | Milestone | Deliverable |
@@ -104,12 +112,13 @@ pnpm validate
 | **M2** ✅ | Inbound via Cloudflare Email Worker; basic list-view admin page. |
 | **M3** ✅ | Inbox-by-Google UX: card-based list, pin / snooze / done, filter tabs, date buckets, cron wake path for snoozed messages. |
 | **M4** ✅ | Threading (derived from In-Reply-To / References at ingest), message detail / thread view, sanitized HTML body rendering with external-image gating, thread-level bulk actions. |
-| **M5** ✅ | Inline reply / compose in the thread view (TipTap StarterKit editor, pre-filled To / Subject with Re-prefix dedup, quoted-body seed, Cmd+Enter to send, Esc to discard); shared `deliverEmail()` extraction so both the `email:deliver` hook and the new `messages/reply` route dispatch through one path. |
-| **M6** ✅ | Thread-grouping in the inbox list (one card per thread with participant chips, message-count badge, two-snippet preview when N≥2); per-message read state with auto-mark-read on thread open; latest-message-wins filter behavior; new `<ThreadCard>` with fan-out hover actions matching `<ThreadView>`'s bulk-action pattern. |
+| **M5** ✅ | Inline reply / compose in the thread view (TipTap StarterKit editor, pre-filled To / Subject with Re-prefix dedup, quoted-body seed, Cmd+Enter to send, Esc to close with unsaved-change protection); shared `deliverEmail()` extraction so both the `email:deliver` hook and the new `messages/reply` route dispatch through one path. |
+| **M6** ✅ | Thread-grouping in the inbox list (one card per thread with participant chips, message-count badge, message preview and expandable conversation history); per-message read state with auto-mark-read on thread open; latest-message-wins filter behavior; new `<ThreadCard>` with fan-out hover actions matching `<ThreadView>`'s bulk-action pattern. |
 | **M7** ✅ | REST-to-native binding migration for outbound (drops the `accountId` / `apiToken` settings + the `network:fetch` capability); admin-auth `messages/mcp` route exposing 7 inbox tools over JSON-RPC 2.0 (`list_threads`, `get_thread`, `search_messages`, `mark_read`, `pin_thread`, `snooze_thread`, `mark_done`); typed `EmailBinding` + `DeliverError` + `wrapBindingError()` helper module. |
 | **M8** ✅ | Compose-from-scratch with CC / BCC, reply-all, and the full draft lifecycle (save / resume / send / discard, Drafts tab) — in both the admin UI **and** the `messages/mcp` route (7 new tools, catalog of 14), all wrapping one shared operations core. Host-side MCP proxy example so Claude and other MCP clients can connect despite the response envelope. Attachments, signatures, toast undo, and pagination moved to M8b. |
 | **M8b** ✅ | Private inbound/outbound attachments, complete thread pagination, resumable substring search, and server-side thread actions. Signatures and toast undo remain follow-up polish. |
 | **Send recovery** ✅ | Durable send attempts, locked Outbox, receipt recovery, stable request IDs, and explicit review of uncertain outcomes. |
+| **Daylight UI** | Deployed on PBWeb: Top/Left navigation, full-window mode, responsive read/compose, search, private attachment previews, and host-link draft protection. See the rollout report for acceptance coverage. |
 | **M9** | Bundle classification (Orders, Shipping, Commissions, Fans, Promos, Updates) + highlights — structured field extraction surfaced as inline cards. Reminders, content linking. **v1.0.** |
 
 ## Attribution

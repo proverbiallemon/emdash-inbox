@@ -15,3 +15,7 @@ attachment byte-preservation patch, under the MIT-0 license.
 Upstream: https://github.com/postalsys/postal-mime
 The original license is included in vendor/postal-mime-LICENSE.txt.
 Patch and generation provenance are documented in docs/mime-parser.md.
+
+This product embeds the Manrope font, copyright 2018 The Manrope Project
+Authors, under the SIL Open Font License 1.1. The license is included in
+src/daylight/Manrope-OFL.txt. Asset provenance is in docs/daylight-design.md.

@@ -64,7 +64,7 @@ function threadResponse(pinned = false, status = "inbox") {
 }
 function subjectInput() { return [...container.querySelectorAll("label")].find(node => node.textContent?.trim() === "Subject")?.querySelector("input"); }
 
-it.each(["📌 Pin thread", "✓ Mark done"])("preserves an unsaved reply while %s refreshes the thread", async (action) => {
+it.each(["Pin thread", "✓ Mark done"])("preserves an unsaved reply while %s refreshes the thread", async (action) => {
 	let finish!: (value: Response) => void;
 	const refresh = new Promise<Response>(resolve => { finish = resolve; });
 	let reads = 0;
@@ -78,10 +78,10 @@ it.each(["📌 Pin thread", "✓ Mark done"])("preserves an unsaved reply while 
 	const originalInput = subjectInput();
 	await click(action);
 	expect(subjectInput()?.value).toBe("Unsaved reply edits");
-	await React.act(async () => { finish(threadResponse(action === "📌 Pin thread", action === "✓ Mark done" ? "done" : "inbox")); });
+	await React.act(async () => { finish(threadResponse(action === "Pin thread", action === "✓ Mark done" ? "done" : "inbox")); });
 	expect(subjectInput()).toBe(originalInput);
 	expect(subjectInput()?.value).toBe("Unsaved reply edits");
-	expect(button(action === "📌 Pin thread" ? "📌 Unpin thread" : "↩ Move to inbox").disabled).toBe(false);
+	expect(button(action === "Pin thread" ? "Unpin thread" : "↩ Move to inbox").disabled).toBe(false);
 });
 
 it.each(["action", "refresh"])("preserves an unsaved reply and displays a thread %s error inline", async (failure) => {
@@ -93,7 +93,7 @@ it.each(["action", "refresh"])("preserves an unsaved reply and displays a thread
 		throw new Error(`Unexpected request: ${path}`);
 	});
 	await render(<ThreadView messageId="parent-row" debug={false} onBack={() => {}} />);
-	await click("↩ Reply"); await fill("Subject", "Unsaved reply edits"); await click("📌 Pin thread");
+	await click("↩ Reply"); await fill("Subject", "Unsaved reply edits"); await click("Pin thread");
 	expect(subjectInput()?.value).toBe("Unsaved reply edits");
 	expect(container.querySelector('[role="alert"]')?.textContent).toContain("Thread update interrupted");
 	expect(button("Send").disabled).toBe(false);
@@ -115,7 +115,7 @@ it.each(["uncertain", "unconfirmed"])("preserves the %s reply delivery lock thro
 		throw new Error(`Unexpected request: ${path}`);
 	});
 	await render(<ThreadView messageId="parent-row" debug={false} onBack={() => {}} />);
-	await click("↩ Reply"); await fill("Subject", "Original delivery"); await click("Send"); await click("📌 Pin thread");
+	await click("↩ Reply"); await fill("Subject", "Original delivery"); await click("Send"); await click("Pin thread");
 	await React.act(async () => { finish(threadResponse(true)); });
 	expect(button("Send").disabled).toBe(true);
 	expect(subjectInput()?.value).toBe("Original delivery");
@@ -205,7 +205,7 @@ async function openOutbox() { window.history.replaceState({}, "", "/_emdash/admi
 
 it("shows accepted delivery as pending and reconciles without submitting mail", async () => {
 	const paths: string[] = [];
-	vi.stubGlobal("fetch", async (path: string) => { paths.push(path); return response(path.endsWith("reconcile") ? { recovered: 1, restored: 0, uncertain: 0 } : { items: [delivery("accepted")], hasMore: false }); });
+	vi.stubGlobal("fetch", async (path: string) => { if (path.endsWith("ui/preferences")) return response({preferences:{navigation:"top",fullWindow:false},canSave:false}); paths.push(path); return response(path.endsWith("reconcile") ? { recovered: 1, restored: 0, uncertain: 0 } : { items: [delivery("accepted")], hasMore: false }); });
 	await openOutbox();
 	expect(container.textContent).toContain("Accepted — mailbox update pending");
 	expect(container.textContent).not.toContain("Confirmed sent");
@@ -264,6 +264,7 @@ it("keeps resolution recoverable after an API failure and prevents same-tick dup
 it("appends Outbox pages without duplicating moving attempts", async () => {
 	const requests: any[] = [];
 	vi.stubGlobal("fetch", async (_path: string, init: RequestInit) => {
+		if (_path.endsWith("ui/preferences")) return response({preferences:{navigation:"top",fullWindow:false},canSave:false});
 		const body = JSON.parse(init.body as string); requests.push(body);
 		return response(body.cursor ? { items: [delivery("accepted"), delivery("sending", { attemptId: "attempt-2", subject: "Second delivery" })], hasMore: false } : { items: [delivery()], cursor: "outbox-page-2", hasMore: true });
 	});
@@ -271,4 +272,28 @@ it("appends Outbox pages without duplicating moving attempts", async () => {
 	expect(requests[1].cursor).toBe("outbox-page-2"); expect(container.querySelectorAll("article")).toHaveLength(2);
 	expect(container.textContent).toContain("Accepted — mailbox update pending"); expect(container.textContent).toContain("Second delivery");
 	expect([...container.querySelectorAll("button")].some(node => node.textContent === "Load more deliveries")).toBe(false);
+});
+
+it('guards folder changes and reply-mode switches without discarding unsaved edits', async () => {
+ window.history.replaceState({}, '', '/_emdash/admin/plugins/emdash-inbox?message=parent-row');
+ vi.stubGlobal('fetch', async (path:string) => path.endsWith('ui/preferences') ? response({preferences:{navigation:'top',fullWindow:false},canSave:false}) : path.endsWith('messages/thread') ? threadResponse() : response({items:[],hasMore:false}));
+ const confirm=vi.spyOn(window,'confirm').mockReturnValue(false);
+ await render(React.createElement(pages['/'] as React.ComponentType));
+ await click('↩ Reply');await fill('Subject','Do not lose this');const input=subjectInput();
+ await click('↩↩ Reply all');expect(subjectInput()).toBe(input);expect(subjectInput()?.value).toBe('Do not lose this');
+ await click('Inbox');expect(subjectInput()).toBe(input);expect(confirm).toHaveBeenCalledTimes(2);
+ confirm.mockReturnValue(true);await click('Inbox');expect(subjectInput()).toBeUndefined();expect(confirm).toHaveBeenCalledTimes(3);
+});
+
+it.each(['pending','uncertain'])('keeps a %s reply locked when switching reply mode',async(deliveryStatus)=>{
+ window.history.replaceState({}, '', '/_emdash/admin/plugins/emdash-inbox?message=parent-row');
+ let sends=0;
+ vi.stubGlobal('fetch',async(path:string)=>{
+  if(path.endsWith('ui/preferences'))return response({preferences:{navigation:'top',fullWindow:false},canSave:false});
+  if(path.endsWith('messages/thread'))return threadResponse();
+  if(path.endsWith('messages/reply')){sends++;return response({id:null,threadId:null,attemptId:'locked-reply',deliveryStatus});}
+  return response({items:[],hasMore:false});
+ });
+ await render(React.createElement(pages['/'] as React.ComponentType));await click('↩ Reply');await click('Send');const input=subjectInput();
+ await click('↩↩ Reply all');expect(subjectInput()).toBe(input);expect(button('Send').disabled).toBe(true);expect(sends).toBe(1);
 });

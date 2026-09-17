@@ -28,7 +28,7 @@ export function SnoozePicker({ onConfirm, onCancel, debug }: Props) {
 	};
 
 	return (
-		<div className="absolute z-10 mt-2 right-0 w-64 rounded-lg border bg-popover shadow-lg p-2">
+		<div className="dl-snooze-options">
 			<div className="flex flex-col">
 				{SNOOZE_PRESETS.map((p) => (
 					<button
@@ -60,6 +60,7 @@ export function SnoozePicker({ onConfirm, onCancel, debug }: Props) {
 					<div className="p-2 space-y-2">
 						<input
 							type="datetime-local"
+							aria-label="Custom snooze date and time"
 							className="w-full border rounded px-2 py-1 text-sm bg-background"
 							value={customValue}
 							onChange={(e) => setCustomValue(e.target.value)}
@@ -83,6 +84,7 @@ export function SnoozePicker({ onConfirm, onCancel, debug }: Props) {
 					</div>
 				)}
 			</div>
+			<button type="button" className="dl-button dl-subtle" onClick={onCancel}>Cancel</button>
 		</div>
 	);
 }

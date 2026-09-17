@@ -8,21 +8,26 @@ interface Props {
 }
 
 export function TipTapEditor({ initialContent, onReady }: Props) {
+	const ready = React.useRef(onReady);
+	ready.current = onReady;
 	const editor = useEditor({
-		extensions: [StarterKit],
+		// Keep untouched quoted replies stable; an implicit trailing paragraph
+		// otherwise changes the saved snapshot on the first focus transaction.
+		extensions: [StarterKit.configure({ trailingNode: false })],
 		content: initialContent,
+		editorProps: { attributes: { role: "textbox", "aria-label": "Message body", "aria-multiline": "true" } },
 	});
 
-	// Notify parent once on mount; useEditor returns the same instance for the
-	// component's lifetime, so a guard is not needed.
+	// A refreshed thread may change defaults without replacing this editor.
+	// Notify only for a new editor so that refreshes cannot reset dirty state.
 	React.useEffect(() => {
-		if (editor) onReady(editor);
-	}, [editor, onReady]);
+		if (editor) ready.current(editor);
+	}, [editor]);
 
 	return (
 		<EditorContent
 			editor={editor}
-			className="prose prose-sm max-w-none min-h-[12rem] border rounded p-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2"
+			className="dl-editor"
 		/>
 	);
 }

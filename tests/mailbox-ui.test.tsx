@@ -14,6 +14,7 @@ afterEach(async()=>{await React.act(async()=>root.unmount());container.remove();
 it('keeps the new tab when an action from the previous tab completes',async()=>{
  const action=deferred();const requested:string[]=[];
  vi.stubGlobal('fetch',async(url:string,init:RequestInit)=>{
+  if(url.endsWith('/ui/preferences'))return response({preferences:{navigation:'top',fullWindow:false},canSave:false});
   if(url.endsWith('/threads/action'))return action.promise;
   const {status}=JSON.parse(init.body as string);requested.push(status);return response({items:[row(status==='done'?'Done fixture':'Inbox fixture',status)],hasMore:false});
  });
@@ -30,4 +31,26 @@ it('appends another complete page and ignores duplicate moving threads',async()=
  });
  await React.act(async()=>root.render(React.createElement(pages['/'] as React.ComponentType)));await flush();await click('Load more conversations');
  expect(container.textContent).toContain('Second fixture');expect(container.textContent?.split('First fixture')).toHaveLength(2);expect(container.textContent).not.toContain('Load more conversations');
+});
+it('continues an empty search scan and opens a later matching message',async()=>{
+ window.history.replaceState({},'','/?status=all&q=needle');const requests:any[]=[];
+ vi.stubGlobal('fetch',async(url:string,init:RequestInit)=>{
+  if(url.endsWith('/ui/preferences'))return response({preferences:{navigation:'top',fullWindow:false},canSave:false});
+  if(url.endsWith('/messages/thread'))return response({items:[]});
+  const body=JSON.parse(init.body as string);requests.push(body);
+  return response(body.cursor?{items:[{id:'match',...row('Needle found').latest,read:false,pinned:false}],hasMore:false}:{items:[],cursor:'scan-next',hasMore:true});
+ });
+ await React.act(async()=>root.render(React.createElement(pages['/'] as React.ComponentType)));await flush();
+ expect(container.textContent).toContain('Keep looking.');await click('Continue search');
+ expect(requests).toEqual([{query:'needle',limit:25},{query:'needle',limit:25,cursor:'scan-next'}]);
+ expect(container.textContent).toContain('Needle found');expect(container.textContent).not.toContain('Continue search');
+ const open=container.querySelector<HTMLButtonElement>('[aria-label="Open Needle found"]')!;
+ await React.act(async()=>open.click());await flush();expect(window.location.search).toContain('message=match');
+});
+it('ignores a late search result after returning to Inbox',async()=>{
+ window.history.replaceState({},'','/?status=all&q=needle');const search=deferred();
+ vi.stubGlobal('fetch',async(url:string)=>url.endsWith('/ui/preferences')?response({preferences:{navigation:'top',fullWindow:false},canSave:false}):url.endsWith('/messages/search')?search.promise:response({items:[row('Inbox stays')],hasMore:false}));
+ await React.act(async()=>root.render(React.createElement(pages['/'] as React.ComponentType)));await flush();await click('Inbox');
+ await React.act(async()=>search.resolve(response({items:[{id:'late',...row('Late match').latest}],hasMore:false})));await flush();
+ expect(container.textContent).toContain('Inbox stays');expect(container.textContent).not.toContain('Late match');
 });

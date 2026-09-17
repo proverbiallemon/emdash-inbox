@@ -7,7 +7,7 @@ export function DeliveryNotice({ status, attemptId, busy, onCheck }: {
 	onCheck: () => void;
 }) {
 	if (!status) return null;
-	return <div role="status" className="rounded border bg-muted/40 p-3 text-sm space-y-2">
+	return <div role="status" className="dl-delivery-notice">
 		<p>{status === "pending"
 			? "Delivery is still being recorded. Check Outbox for the result before sending again."
 			: status === "uncertain"

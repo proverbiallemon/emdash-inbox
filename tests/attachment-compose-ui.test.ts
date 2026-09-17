@@ -157,7 +157,7 @@ describe("compose attachment interactions", () => {
 		vi.stubGlobal("fetch", async () => response({ attachment: metadata, offset: 0, contentBase64: "eA==", nextOffset: null, done: true }));
 		try {
 			await render(React.createElement(AttachmentDownloads, { messageId: "message", attachments: [metadata] }));
-			const download = container.querySelector("button")!; await React.act(async () => { download.click(); });
+			const download = container.querySelector<HTMLButtonElement>('button[aria-label="Download one.txt"]')!; await React.act(async () => { download.click(); });
 			expect(blobs[0].type).toBe("application/octet-stream"); expect(clicked).toEqual([{ href: "blob:private-download", download: "one.txt" }]);
 			await React.act(async () => { await vi.runAllTimersAsync(); }); expect(revoked).toEqual(["blob:private-download"]);
 		} finally { vi.useRealTimers(); }
