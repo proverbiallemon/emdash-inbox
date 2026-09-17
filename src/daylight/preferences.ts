@@ -24,12 +24,13 @@ export function useInboxPreferences() {
 		return () => { active = false; };
 	}, []);
 	const update = async (next: InboxPreferences) => {
-		if (locked.current || loading) return;
+		if (locked.current || loading) return false;
 		locked.current = true; setSaving(true); setError(null);
 		try {
 			if (canSave) await postInbox("ui/preferences-save", next);
 			setPreferences(next);
-		} catch (caught) { setError(caught instanceof Error ? caught.message : "Could not save your layout. Try again."); }
+			return true;
+		} catch (caught) { setError(caught instanceof Error ? caught.message : "Could not save your layout. Try again."); return false; }
 		finally { locked.current = false; setSaving(false); }
 	};
 	return { preferences, userId, name, senderAddress, canSave, loading, saving, error, update };

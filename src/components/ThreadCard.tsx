@@ -5,11 +5,12 @@ export type ThreadCardRow = ThreadSummary;
 interface Props {
  row: ThreadSummary; busy: boolean; selected?: boolean;
  onOpen: (id: string) => void;
+ onMove?: (summary: ThreadSummary) => void;
  onPinToggle: (summary: ThreadSummary, pinned: boolean) => void;
  onDone: (summary: ThreadSummary) => void;
  onSnoozeRequest: (summary: ThreadSummary) => void;
 }
-export function ThreadCard({ row, busy, selected, onOpen, onPinToggle, onDone, onSnoozeRequest }: Props) {
+export function ThreadCard({ row, busy, selected, onOpen, onPinToggle, onDone, onSnoozeRequest, onMove }: Props) {
  const descriptionId = useId();
  const subject = row.latest.subject || "(no subject)";
  const sender = row.participants.map(person => person.label).join(", ") || row.latest.from;
@@ -26,6 +27,7 @@ export function ThreadCard({ row, busy, selected, onOpen, onPinToggle, onDone, o
    <time className="dl-thread-time" dateTime={date.toISOString()}>{time}</time>
   </button>
   <div className="dl-row-actions" aria-label={`Actions for ${subject}`}>
+   {onMove && <button type="button" className="dl-icon-button dl-move-button" disabled={busy} aria-label={`Move conversation: ${subject}`} title="Move conversation" onClick={() => onMove(row)}>↪</button>}
    <button type="button" className="dl-icon-button" disabled={busy} aria-label={row.pinned ? "Unpin" : "Pin"} aria-pressed={row.pinned} title={row.pinned ? "Unpin" : "Pin"} onClick={() => onPinToggle(row, !row.pinned)}><Icon name="pin" /></button>
    <button type="button" className="dl-icon-button" disabled={busy} aria-label="Snooze" title="Snooze" onClick={() => onSnoozeRequest(row)}><Icon name="snooze" /></button>
    <button type="button" className="dl-icon-button" disabled={busy} title="Mark done" onClick={() => onDone(row)}><Icon name="done" /><span className="dl-sr-only">✓ Done</span></button>

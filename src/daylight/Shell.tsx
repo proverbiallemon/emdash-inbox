@@ -40,10 +40,10 @@ interface Props {
 	ui: ReturnType<typeof useInboxPreferences>;
 	status: TabId; onStatus: (status: TabId) => void;
 	query: string; onSearch: (query: string) => void;
-	onCompose: () => void; children: React.ReactNode;
+	onCompose: () => void; onManageBundles?: () => void; children: React.ReactNode;
 }
 
-export function DaylightShell({ ui, status, onStatus, query, onSearch, onCompose, children }: Props) {
+export function DaylightShell({ ui, status, onStatus, query, onSearch, onCompose, onManageBundles, children }: Props) {
 	const [appearance, setAppearance] = React.useState(false);
 	const [drawer, setDrawer] = React.useState(false);
 	const [search, setSearch] = React.useState(query);
@@ -75,6 +75,7 @@ export function DaylightShell({ ui, status, onStatus, query, onSearch, onCompose
 				<main className="dl-main" id="daylight-mail">{children}</main>
 			</div>
 			<footer className="dl-app-footer">{settings}<button type="button" className="dl-button dl-subtle" disabled={ui.loading || ui.saving} onClick={() => void ui.update({ ...ui.preferences, fullWindow: !ui.preferences.fullWindow })}>{ui.preferences.fullWindow ? "Use dashboard view" : "Expand Inbox"}</button><a href="/_emdash/admin/plugins/emdash-inbox/settings">Mail settings</a></footer>
+			<nav className="dl-mobile-bottom" aria-label="Mobile mail navigation">{(["inbox", "snoozed", "drafts"] as const).map(folder => <button type="button" key={folder} aria-current={status === folder ? "page" : undefined} onClick={() => navigate(folder)}>{folder === "snoozed" ? <Icon name="snooze" /> : <span aria-hidden="true">{folder === "inbox" ? "▤" : "✎"}</span>}{folder === "inbox" ? "Inbox" : folder === "snoozed" ? "Snoozed" : "Drafts"}</button>)}<button type="button" onClick={() => setDrawer(true)}>•••<span>More</span></button></nav>
 			{ui.error && !appearance && <p role="alert">{ui.error}</p>}
 			{appearance && <Dialog title="Make room for your mail" onClose={() => setAppearance(false)}>
 				<p className="dl-muted">Choose where your mail navigation lives.</p>
@@ -87,6 +88,7 @@ export function DaylightShell({ ui, status, onStatus, query, onSearch, onCompose
 				<p className="dl-muted">You can always return to the EmDash dashboard.</p>
 				{ui.error && <p role="alert" className="dl-error">{ui.error}</p>}
 				<p className="dl-muted" role="status">{ui.loading ? "Loading your layout…" : ui.saving ? "Saving your layout…" : ui.error ? "Your layout could not be saved." : ui.canSave ? "Saved for your account." : "This layout applies to your current visit."}</p>
+				{onManageBundles && <button type="button" className="dl-button" onClick={() => {setAppearance(false); onManageBundles();}}>Manage bundles</button>}
 				<button type="button" className="dl-button dl-primary" onClick={() => setAppearance(false)}>Done</button>
 			</Dialog>}
 			{drawer && <Dialog title="Your mailbox" onClose={() => setDrawer(false)}><div className="dl-drawer-navigation">{controls}</div><button type="button" className="dl-button dl-primary" onClick={() => { onCompose(); setDrawer(false); }}>+ New message</button>{settings}<a className="dl-drawer-dashboard" href="/_emdash/admin/">← EmDash dashboard</a></Dialog>}
