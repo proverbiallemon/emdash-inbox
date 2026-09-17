@@ -23,3 +23,21 @@ it("rejects token-only saves and malformed settings without writing",async()=>{
  expect(store.size).toBe(0);
 });
 
+it("defaults old accounts to bundles and preserves both settings groups independently",async()=>{
+ const {ctx,store}=context("owner");
+ store.set("ui:owner",{navigation:"left",fullWindow:true});
+ expect((await readInboxPreferences(ctx as any)).preferences).toMatchObject({enabledBundles:["orders","shipping","commissions","fans","promos","updates"],bundledInbox:true});
+ await saveInboxPreferences({...ctx,input:{enabledBundles:["shipping"],bundledInbox:false}} as any);
+ expect((await readInboxPreferences(ctx as any)).preferences).toEqual({navigation:"left",fullWindow:true,enabledBundles:["shipping"],bundledInbox:false});
+ await saveInboxPreferences({...ctx,input:{navigation:"top",fullWindow:false}} as any);
+ expect((await readInboxPreferences(ctx as any)).preferences).toEqual({navigation:"top",fullWindow:false,enabledBundles:["shipping"],bundledInbox:false});
+ for(const enabledBundles of [["unknown"],["orders","orders"],"orders"]) await expect(saveInboxPreferences({...ctx,input:{enabledBundles}} as any)).rejects.toThrow();
+});
+it("maps primitive settings bodies to useful validation errors",async()=>{
+ const {ctx}=context("owner");
+ for(const input of ["bad",7,true,[]])await expect(saveInboxPreferences({...ctx,input} as any)).rejects.toMatchObject({status:400});
+});
+it("returns the authenticated account identifier for scoping local operation recovery",async()=>{
+ expect(await readInboxPreferences(context("account-one").ctx as any)).toMatchObject({userId:"account-one"});
+ expect(await readInboxPreferences(context().ctx as any)).toMatchObject({userId:null});
+});

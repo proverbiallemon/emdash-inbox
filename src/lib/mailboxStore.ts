@@ -1,3 +1,5 @@
+import { messageAssignment, isBundleId, NO_BUNDLE, type BundleAssignment, type BundleOverride } from "./bundles";
+import { captureBundleEvidence } from "./bundleStore";
 import type { StorageCollection } from "emdash";
 import type { MessageDoc } from "../index";
 import { isDraftRow, type StatusFilter } from "./threadSummary";
@@ -36,11 +38,11 @@ export async function loadThreadRows(ctx: any, threadId: string): Promise<Messag
 
 export const mailboxMessageIndexes = ["indexDirty", "messageKey"];
 export const mailboxCollections = {
-	threads: { indexes: ["status", "listKey", "snoozeKey", ["status", "listKey"], ["status", "snoozeKey"]] },
+	threads: { indexes: ["status", "listKey", "snoozeKey", ["status", "listKey"], ["status", "snoozeKey"], "bundlePresentation", "hasUnread", ["bundlePresentation", "listKey"], ["bundlePresentation", "hasUnread"], ["status", "hasUnread"]] },
 	searchDocuments: { indexes: ["messageKey"] },
 };
 export const MAILBOX_MIGRATION_KEY = "state:mailbox-index:v1";
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const MIGRATION_PAGE_SIZE = 50;
 const REPAIR_MESSAGE_LIMIT = 50;
 const MAX_CAS_ATTEMPTS = 8;
@@ -52,7 +54,12 @@ interface IndexedMessage extends MessageDoc {
 	indexPreviousThreadIds?: string[];
 	indexSchemaVersion?: number;
 }
-interface ThreadIndex {
+export interface ThreadIndex {
+	bundle: BundleAssignment;
+	bundlePresentation: "conversations" | "excluded" | import("./bundles").BundleId;
+	hasUnread: boolean;
+	latestIncomingId: string | null;
+	latestIncomingSender: string | null;
 	schemaVersion: number;
 	threadId: string;
 	latestId: string;
@@ -79,7 +86,7 @@ export class MailboxInputError extends Error {
 
 /** Public messages omit private attachment keys and internal projection metadata. */
 export function mailboxPublicMessage(message: MessageDoc) {
-	const { bodyRaw: _raw, indexDirty: _dirty, indexPreviousThreadIds: _old, indexSchemaVersion: _schema, messageKey: _key, ...publicFields } = message as IndexedMessage;
+	const { bodyRaw: _raw, indexDirty: _dirty, indexPreviousThreadIds: _old, indexSchemaVersion: _schema, messageKey: _key, bundleEvidence: _evidence, ...publicFields } = message as IndexedMessage;
 	return publicMessage(publicFields);
 }
 
@@ -111,7 +118,7 @@ export function prepareMessage(id: string, message: IndexedMessage, previous?: I
 /** Real messages are never deleted; the dirty marker commits with their data. */
 export async function putMessage(ctx: any, id: string, message: MessageDoc): Promise<void> {
 	if ((message.status === "draft" || message.status === "outbox")) throw new Error("Drafts must use draft storage operations");
-	const result = await ctx.storage.messages.compareAndSet(id, null, prepareMessage(id, message));
+	const result = await ctx.storage.messages.compareAndSet(id, null, prepareMessage(id, { ...message, bundleEvidence: await captureBundleEvidence(ctx, message) }));
 	if (!result.applied) throw new Error("Message already exists");
 }
 
@@ -202,10 +209,12 @@ async function migratePage(ctx: any): Promise<boolean> {
 }
 
 /** Keep only summary fields between source pages, never whole message bodies. */
-async function makeThreadIndex(ctx: any, threadId: string): Promise<ThreadIndex | null> {
+export async function makeThreadIndex(ctx: any, threadId: string): Promise<ThreadIndex | null> {
 	type Head = MessageRow<Pick<MessageDoc, "receivedAt" | "status" | "sortAt" | "snoozeUntil">>;
 	type Participant = MessageRow<Pick<MessageDoc, "receivedAt" | "from" | "direction">>;
 	let latest: Head | null = null;
+	let latestIncoming: (Head & { sender: string }) | null = null;
+	let relevant: (Head & { assignment: BundleAssignment }) | null = null;
 	let previous: Head | null = null;
 	let pinned = false;
 	let messageCount = 0;
@@ -220,6 +229,12 @@ async function makeThreadIndex(ctx: any, threadId: string): Promise<ThreadIndex 
 			if (data.read === false) unreadCount++;
 			pinned ||= data.pinned;
 			const head: Head = { id, data: { receivedAt: data.receivedAt, status: data.status, sortAt: data.sortAt, snoozeUntil: data.snoozeUntil } };
+			if (data.direction === "inbound") {
+				if (!latestIncoming || chronological(latestIncoming, head) < 0) latestIncoming = {...head, sender:data.from};
+				let assignment: BundleAssignment = {...NO_BUNDLE};
+				try { assignment = messageAssignment(data); } catch { ctx.log?.warn?.("Bundle classification failed; retaining conversation visibility"); }
+				if (assignment.source !== "none" && (!relevant || chronological(relevant, head) < 0)) relevant = {...head, assignment};
+			}
 			if (!latest || chronological(latest, head) < 0) { previous = latest; latest = head; }
 			else if (!previous || chronological(previous, head) < 0) previous = head;
 			const key = `${data.direction}|${data.from.toLowerCase()}`;
@@ -232,6 +247,9 @@ async function makeThreadIndex(ctx: any, threadId: string): Promise<ThreadIndex 
 		cursor = page.cursor;
 	} while (cursor);
 	if (!latest) return null;
+	const override = await ctx.storage.bundleOverrides.get(threadId) as BundleOverride | null;
+	const bundle: BundleAssignment = override ? (override.bundle === null || isBundleId(override.bundle) ? {bundle:override.bundle,source:"manual"} : {...NO_BUNDLE}) : relevant?.assignment ?? {...NO_BUNDLE};
+	const bundlePresentation = latest.data.status !== "inbox" ? "excluded" : pinned || !bundle.bundle ? "conversations" : bundle.bundle;
 	const sortAt = latest.data.sortAt ?? latest.data.receivedAt;
 	const snoozeUntil = latest.data.snoozeUntil ?? null;
 	const tail = encodeURIComponent(threadId);
@@ -240,6 +258,7 @@ async function makeThreadIndex(ctx: any, threadId: string): Promise<ThreadIndex 
 	const descendingTime = (8640000000000000n - BigInt(new Date(iso(sortAt)).getTime())).toString().padStart(17, "0");
 	const participants = [...participantsByAddress.values()].sort(chronological).map(({ data }) => ({ direction: data.direction, from: data.from }));
 	return {
+		bundle, bundlePresentation, hasUnread: unreadCount > 0, latestIncomingId:latestIncoming?.id ?? null, latestIncomingSender:latestIncoming?.sender ?? null,
 		schemaVersion: INDEX_VERSION, threadId, latestId: latest.id,
 		previousId: previous?.id ?? null,
 		status: latest.data.status, pinned, sortAt, snoozeUntil,
@@ -249,7 +268,7 @@ async function makeThreadIndex(ctx: any, threadId: string): Promise<ThreadIndex 
 	};
 }
 
-async function refreshThread(ctx: any, threadId: string): Promise<void> {
+export async function refreshThread(ctx: any, threadId: string): Promise<void> {
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
 		// Capture before the source scan: an older scan cannot replace a newer publication.
 		const snapshot = await ctx.storage.threads.getVersioned(threadId);
@@ -288,7 +307,15 @@ async function repairDirtyMessages(ctx: any): Promise<boolean> {
 export async function ensureMailboxIndex(ctx: any): Promise<{ complete: boolean }> {
 	const migrated = await migratePage(ctx);
 	const repaired = await repairDirtyMessages(ctx);
-	return { complete: migrated && repaired };
+	const overrides = await ctx.storage.bundleOverrides.query({where:{dirty:true},limit:50});
+	for (const row of overrides.items) {
+		const snapshot = await ctx.storage.bundleOverrides.getVersioned(row.id);
+		if (!snapshot?.value.dirty) continue;
+		await refreshThread(ctx, row.id);
+		await ctx.storage.bundleOverrides.compareAndSet(row.id, snapshot.revision, {...snapshot.value,dirty:false});
+	}
+	const overridesComplete = !(await ctx.storage.bundleOverrides.query({where:{dirty:true},limit:1})).items.length;
+	return { complete: migrated && repaired && overridesComplete };
 }
 
 /** Direct operations need historical thread IDs, but read authoritative messages, not projections. */
@@ -298,12 +325,12 @@ export async function requireMailboxReady(ctx: any): Promise<void> {
 	}
 }
 
-interface Cursor { v: number; kind: "threads" | "search"; filter: string; after: string }
-function encodeCursor(cursor: Cursor): string {
+interface Cursor { v: number; kind: "threads" | "search" | "bundles"; filter: string; after: string }
+export function encodeCursor(cursor: Cursor): string {
 	const bytes = new TextEncoder().encode(JSON.stringify(cursor));
 	return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join("")).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
-function decodeCursor(value: string | undefined, kind: Cursor["kind"], filter: string): string | undefined {
+export function decodeCursor(value: string | undefined, kind: Cursor["kind"], filter: string): string | undefined {
 	if (value === undefined) return undefined;
 	try {
 		if (typeof value !== "string" || value.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
@@ -313,7 +340,7 @@ function decodeCursor(value: string | undefined, kind: Cursor["kind"], filter: s
 		return cursor.after;
 	} catch { throw new MailboxInputError("Invalid pagination cursor for this request"); }
 }
-function pageLimit(value: number | undefined, fallback: number): number {
+export function pageLimit(value: number | undefined, fallback: number): number {
 	if (value === undefined) return fallback;
 	if (!Number.isInteger(value) || value < 1 || value > 100) throw new MailboxInputError("limit must be an integer from 1 to 100");
 	return value;
@@ -336,13 +363,19 @@ export async function listThreadPage(ctx: any, input: ThreadPageInput = {}) {
 		orderBy: { [field]: "asc" }, limit,
 	});
 	const rows = result.items as MessageRow<ThreadIndex>[];
+	const items = await threadSummaries(ctx, rows);
+	const cursor = result.hasMore && rows.length ? encodeCursor({ v: INDEX_VERSION, kind: "threads", filter, after: rows.at(-1)!.data[field] }) : undefined;
+	return { items, cursor, hasMore: !!result.hasMore };
+}
+
+export async function threadSummaries(ctx: any, rows: MessageRow<ThreadIndex>[]) {
 	const ids = [...new Set(rows.flatMap(({ data }) => [data.latestId, ...(data.previousId ? [data.previousId] : [])]))];
 	const messages = new Map<string, MessageDoc>();
 	for (let i = 0; i < ids.length; i += 100) {
 		for (const [id, message] of await ctx.storage.messages.getMany(ids.slice(i, i + 100))) messages.set(id, message);
 	}
 	const senderAddress = (await ctx.kv.get("settings:senderAddress")) ?? "";
-	const items = rows.map(({ data }) => {
+	return rows.map(({ data }) => {
 		const latest = messages.get(data.latestId);
 		if (!latest) throw new Error("Indexed message is missing; rebuild the mailbox index");
 		const previous = data.previousId ? messages.get(data.previousId) : null;
@@ -351,11 +384,9 @@ export async function listThreadPage(ctx: any, input: ThreadPageInput = {}) {
 			latest: mailboxPublicMessage(latest), previous: previous ? mailboxPublicMessage(previous) : null,
 			messageCount: data.messageCount, unreadCount: data.unreadCount,
 			participants: deriveParticipantChips(data.participants as MessageDoc[], senderAddress),
-			pinned: data.pinned, sortAt: data.sortAt, snoozeUntil: data.snoozeUntil,
+			bundle: data.bundle, pinned: data.pinned, sortAt: data.sortAt, snoozeUntil: data.snoozeUntil,
 		};
 	});
-	const cursor = result.hasMore && rows.length ? encodeCursor({ v: INDEX_VERSION, kind: "threads", filter, after: rows.at(-1)!.data[field] }) : undefined;
-	return { items, cursor, hasMore: !!result.hasMore };
 }
 
 export async function searchMessagePage(ctx: any, input: SearchPageInput): Promise<Page<ReturnType<typeof mailboxPublicMessage> & { id: string }>> {

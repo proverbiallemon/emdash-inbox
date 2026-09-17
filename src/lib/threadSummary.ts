@@ -1,3 +1,4 @@
+import { classifyThread, type BundleAssignment } from "./bundles";
 import type { PublicAttachment } from "./attachments";
 import type { MessageDoc } from "../index";
 import { deriveParticipantChips, type ParticipantChip } from "./participantChips";
@@ -7,6 +8,7 @@ export type StatusFilter = "inbox" | "snoozed" | "done" | "all";
 export type MessageView = Omit<MessageDoc, "bodyRaw" | "rawObjectKey" | "attachments"> & { attachments?: PublicAttachment[] };
 
 export interface ThreadSummary {
+	bundle?: BundleAssignment;
 	id: string;
 	threadId: string;
 	openMessageId: string;
@@ -85,6 +87,7 @@ export function aggregateThreads(
 		const previous = sorted.length >= 2 ? sorted[sorted.length - 2] : null;
 
 		summaries.push({
+			bundle: classifyThread(sorted.map(r => r.data)),
 			id: tid,
 			threadId: tid,
 			openMessageId: latest.id,

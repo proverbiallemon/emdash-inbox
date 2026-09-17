@@ -1,3 +1,4 @@
+import { bundleCollections, bundleRoutes } from "./lib/bundleStore";
 import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
 import { DeliverError, wrapBindingError, type EmailBinding } from "./lib/cfBindingError";
@@ -76,6 +77,7 @@ export type MessageDirection = "inbound" | "outbound";
 export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft" | "outbox";
 
 export interface MessageDoc {
+	bundleEvidence?: import("./lib/bundles").BundleEvidence;
 	deliveryAttemptId?: string;
 	deliveryFingerprint?: string;
 	deliveryCreatedAt?: string;
@@ -508,6 +510,7 @@ export function createPlugin() {
 
 		storage: {
 			...mailboxCollections,
+			...bundleCollections,
 			...attachmentCollections,
 			...deliveryCollections,
 			messages: {
@@ -581,6 +584,7 @@ export function createPlugin() {
 		mcp: native.mcp,
 		routes: {
 			...native.routes,
+			...bundleRoutes,
 			"ui/preferences": { permission: "plugins:manage", handler: readInboxPreferences },
 			"ui/preferences-save": { permission: "plugins:manage", handler: saveInboxPreferences },
 			"messages/search": {

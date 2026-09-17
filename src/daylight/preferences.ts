@@ -1,10 +1,11 @@
 import * as React from "react";
 import { postInbox } from "../lib/attachmentClient";
 import type { InboxPreferences } from "../lib/uiPreferences";
-const defaultInboxPreferences: InboxPreferences = { navigation: "top", fullWindow: false };
+const defaultInboxPreferences: InboxPreferences = { navigation: "top", fullWindow: false, enabledBundles: ["orders", "shipping", "commissions", "fans", "promos", "updates"], bundledInbox: true };
 
 export function useInboxPreferences() {
 	const [preferences, setPreferences] = React.useState(defaultInboxPreferences);
+	const [userId, setUserId] = React.useState<string | null>(null);
 	const [name, setName] = React.useState<string | null>(null);
 	const [senderAddress, setSenderAddress] = React.useState("");
 	const [canSave, setCanSave] = React.useState(false);
@@ -14,9 +15,9 @@ export function useInboxPreferences() {
 	const locked = React.useRef(false);
 	React.useEffect(() => {
 		let active = true;
-		postInbox<{ preferences: InboxPreferences; name: string | null; canSave: boolean; senderAddress?: string }>("ui/preferences", {}).then(data => {
+		postInbox<{ preferences: InboxPreferences; userId?: string | null; name: string | null; canSave: boolean; senderAddress?: string }>("ui/preferences", {}).then(data => {
 			if (!active || !data.preferences) return;
-			setPreferences(data.preferences); setName(data.name); setCanSave(data.canSave);
+			setPreferences(data.preferences); setUserId(data.userId ?? null); setName(data.name); setCanSave(data.canSave);
 			setSenderAddress(data.senderAddress ?? "");
 		}).catch(caught => { if (active) setError(caught instanceof Error ? caught.message : "Could not load your layout."); })
 			.finally(() => { if (active) setLoading(false); });
@@ -31,5 +32,5 @@ export function useInboxPreferences() {
 		} catch (caught) { setError(caught instanceof Error ? caught.message : "Could not save your layout. Try again."); }
 		finally { locked.current = false; setSaving(false); }
 	};
-	return { preferences, name, senderAddress, canSave, loading, saving, error, update };
+	return { preferences, userId, name, senderAddress, canSave, loading, saving, error, update };
 }

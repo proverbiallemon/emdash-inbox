@@ -34,7 +34,9 @@ describe("complete mailbox operations against EmDash SQLite", () => {
 			storage: { messages: new PluginStorageRepository<MessageDoc>(host.db, "emdash-inbox", "messages", [
 				...host.plugin.storage.messages.indexes, "messageId", "indexDirty", "messageKey",
 			]),
-			threads: new PluginStorageRepository(host.db, "emdash-inbox", "threads", ["status", "listKey", "snoozeKey"]),
+			threads: new PluginStorageRepository(host.db, "emdash-inbox", "threads", host.plugin.storage.threads.indexes),
+			bundleOverrides: new PluginStorageRepository(host.db, "emdash-inbox", "bundleOverrides", host.plugin.storage.bundleOverrides.indexes),
+			bundleRules: new PluginStorageRepository(host.db, "emdash-inbox", "bundleRules", host.plugin.storage.bundleRules.indexes),
 			searchDocuments: new PluginStorageRepository(host.db, "emdash-inbox", "searchDocuments", ["messageKey"]),
 			},
 			kv: { get: options.get.bind(options), set: options.set.bind(options), delete: options.delete.bind(options), getVersioned: options.getVersioned.bind(options), compareAndSet: options.compareAndSet.bind(options) },
