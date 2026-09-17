@@ -11,6 +11,8 @@ export interface BundleAssignment {
 }
 export interface BundleEvidence {
     version: 1;
+    /** Unlike a successful no-match, failure supersedes older automatic evidence. */
+    failed?: true;
     assignment: BundleAssignment;
 }
 export interface BundleRule {
@@ -72,18 +74,23 @@ export function builtinAssignment(message: Pick<MessageDoc, "direction" | "statu
         bundle = "updates";
     return bundle ? { bundle, source: "builtin", ruleId: `builtin:${bundle}:1` } : { ...NO_BUNDLE };
 }
+/** Invalid persisted evidence is a failure, not an ordinary acknowledgement with no match. */
+export function bundleClassificationFailed(message: MessageDoc): boolean {
+    if (message.direction !== "inbound" || message.status === "draft" || message.status === "outbox")
+        return false;
+    const evidence = message.bundleEvidence;
+    if (evidence === undefined)
+        return false;
+    const assignment = evidence?.assignment;
+    return !evidence || evidence.version !== 1 || evidence.failed !== undefined || !assignment ||
+        (assignment.bundle !== null && !isBundleId(assignment.bundle)) ||
+        !["sender", "builtin", "none"].includes(assignment.source);
+}
 /** Ingested evidence is immutable. Legacy rows use built-ins without consulting current rules. */
 export function messageAssignment(message: MessageDoc): BundleAssignment {
-    if (message.direction !== "inbound" || message.status === "draft" || message.status === "outbox")
+    if (message.direction !== "inbound" || message.status === "draft" || message.status === "outbox" || bundleClassificationFailed(message))
         return { ...NO_BUNDLE };
-    const evidence = message.bundleEvidence;
-    if (evidence) {
-        const assignment = evidence.assignment;
-        if (evidence.version !== 1 || !assignment || (assignment.bundle !== null && !isBundleId(assignment.bundle)) || !["sender", "builtin", "none"].includes(assignment.source))
-            return { ...NO_BUNDLE };
-        return assignment;
-    }
-    return builtinAssignment(message);
+    return message.bundleEvidence?.assignment ?? builtinAssignment(message);
 }
 export function classifyThread(messages: MessageDoc[], override?: Pick<BundleOverride, "bundle"> | null): BundleAssignment {
     if (override)
@@ -91,7 +98,7 @@ export function classifyThread(messages: MessageDoc[], override?: Pick<BundleOve
     const incoming = messages.filter(m => m.direction === "inbound" && m.status !== "draft" && m.status !== "outbox").sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
     for (let i = incoming.length - 1; i >= 0; i--) {
         const match = messageAssignment(incoming[i]);
-        if (match.source !== "none")
+        if (match.source !== "none" || bundleClassificationFailed(incoming[i]))
             return match;
     }
     return { ...NO_BUNDLE };

@@ -40,3 +40,18 @@ it("recognizes clear dispatch and delivered notices without guessing general shi
 it("keeps internal ingestion evidence out of every public message serializer", () => {
     expect(publicMessage(message(1, { bundleEvidence: { version: 1, assignment: { bundle: "fans", source: "sender", ruleId: "receipts@shop.example" } } }))).not.toHaveProperty("bundleEvidence");
 });
+it("retains prior relevant evidence for ordinary acknowledgements but stops at newer failed or corrupt evidence", () => {
+    const receipt = message(1);
+    const acknowledgement = message(2, { subject: "Acknowledged", bundleEvidence: { version: 1, assignment: { bundle: null, source: "none" } } });
+    expect(classifyThread([receipt, acknowledgement])).toMatchObject({ bundle: "orders", source: "builtin" });
+    for (const bundleEvidence of [
+        { version: 1, failed: true, assignment: { bundle: null, source: "none" } },
+        { version: 1, assignment: { bundle: "corrupt-category", source: "sender" } },
+    ]) {
+        const failed = message(3, { bundleEvidence: bundleEvidence as any });
+        expect(classifyThread([receipt, acknowledgement, failed])).toEqual({ bundle: null, source: "none" });
+        expect(classifyThread([receipt, failed], { bundle: "shipping" })).toEqual({ bundle: "shipping", source: "manual" });
+        expect(classifyThread([receipt, failed], { bundle: null })).toEqual({ bundle: null, source: "manual" });
+        expect(classifyThread([receipt, { ...failed, direction: "outbound" }])).toMatchObject({ bundle: "orders", source: "builtin" });
+    }
+});

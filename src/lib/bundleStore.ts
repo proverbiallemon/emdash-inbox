@@ -47,7 +47,7 @@ export async function captureBundleEvidence(ctx: any, message: MessageDoc): Prom
     }
     catch {
         ctx.log?.warn?.("Bundle evidence unavailable; message remains ordinary");
-        return { version: 1, assignment: { ...NO_BUNDLE } };
+        return { version: 1, failed: true, assignment: { ...NO_BUNDLE } };
     }
 }
 function objectInput(value: unknown, keys: string[]): Record<string, any> {

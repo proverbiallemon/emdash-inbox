@@ -1,4 +1,4 @@
-import { messageAssignment, isBundleId, NO_BUNDLE, type BundleAssignment, type BundleOverride } from "./bundles";
+import { messageAssignment, bundleClassificationFailed, isBundleId, NO_BUNDLE, type BundleAssignment, type BundleOverride } from "./bundles";
 import { captureBundleEvidence } from "./bundleStore";
 import type { StorageCollection } from "emdash";
 import type { MessageDoc } from "../index";
@@ -232,8 +232,9 @@ export async function makeThreadIndex(ctx: any, threadId: string): Promise<Threa
 			if (data.direction === "inbound") {
 				if (!latestIncoming || chronological(latestIncoming, head) < 0) latestIncoming = {...head, sender:data.from};
 				let assignment: BundleAssignment = {...NO_BUNDLE};
-				try { assignment = messageAssignment(data); } catch { ctx.log?.warn?.("Bundle classification failed; retaining conversation visibility"); }
-				if (assignment.source !== "none" && (!relevant || chronological(relevant, head) < 0)) relevant = {...head, assignment};
+				let failed = bundleClassificationFailed(data);
+				try { assignment = messageAssignment(data); } catch { failed = true; ctx.log?.warn?.("Bundle classification failed; retaining conversation visibility"); }
+				if ((assignment.source !== "none" || failed) && (!relevant || chronological(relevant, head) < 0)) relevant = {...head, assignment};
 			}
 			if (!latest || chronological(latest, head) < 0) { previous = latest; latest = head; }
 			else if (!previous || chronological(previous, head) < 0) previous = head;

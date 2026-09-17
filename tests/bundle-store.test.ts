@@ -130,3 +130,26 @@ it("keeps corrupt persisted assignments visible and correctable", async () => {
     await route("bundles/move", { threadId: "t1", bundle: "shipping" });
     expect((await route("bundles/list", { section: "shipping" })).items[0].id).toBe("t1");
 });
+it.each(["rule-read failure", "corrupt evidence"])("returns an already bundled thread to Conversations after newer %s, preserving manual overrides", async (failure) => {
+    await putMessage(ctx, "m1", message(1));
+    await putMessage(ctx, "m2", message(2, { threadId: "t1", subject: "Acknowledged" }));
+    await ready();
+    expect((await route("bundles/list", { section: "orders" })).items[0]).toMatchObject({ id: "t1", unreadCount: 2 });
+    async function incomingWithFailure(id: string, time: number) {
+        if (failure === "rule-read failure") vi.spyOn(ctx.storage.bundleRules, "get").mockRejectedValueOnce(Error("rules unavailable"));
+        await putMessage(ctx, id, message(time, { threadId: "t1", subject: "Following up" }));
+        if (failure === "corrupt evidence") {
+            const stored = await host.messages.get(id);
+            await host.messages.put(id, { ...stored!, bundleEvidence: { version: 1, assignment: { bundle: "corrupt-category", source: "sender" } } as any });
+        }
+    }
+    await incomingWithFailure("m3", 3);
+    await ready();
+    expect((await route("bundles/list", { section: "conversations" })).items[0]).toMatchObject({ id: "t1", unreadCount: 3, bundle: { bundle: null, source: "none" } });
+    expect((await route("bundles/list", { section: "orders" })).items).toEqual([]);
+    expect((await route("bundles/overview")).bundles.find((bundle: any) => bundle.id === "orders").count).toBe(0);
+    await route("bundles/move", { threadId: "t1", bundle: "shipping" });
+    await incomingWithFailure("m4", 4);
+    await ready();
+    expect((await route("bundles/list", { section: "shipping" })).items[0]).toMatchObject({ id: "t1", unreadCount: 4, bundle: { bundle: "shipping", source: "manual" } });
+});
