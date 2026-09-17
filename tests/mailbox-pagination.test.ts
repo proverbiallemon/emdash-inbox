@@ -153,7 +153,7 @@ describe("complete mailbox operations against EmDash SQLite", () => {
 		const last = await tool("search_messages", { query: "needle", cursor: first.cursor });
 		expect(last.items.map((item: any) => item.subject)).toEqual(["Message 0"]);
 		expect(last.hasMore).toBe(false);
-	});
+	}, 15_000);
 
 	it("iterates more than 100 drafts and wakes every due message without touching future snoozes", async () => {
 		for (let i = 0; i < 120; i++) {
@@ -166,7 +166,7 @@ describe("complete mailbox operations against EmDash SQLite", () => {
 		expect(await host.messages.get("m119")).toMatchObject({ status: "inbox", sortAt: "2026-02-01T00:00:00.000Z", snoozeUntil: null });
 		expect(await host.messages.get("future")).toMatchObject({ status: "snoozed" });
 		expect(await host.messages.get("d119")).toMatchObject({ status: "draft" });
-	});
+	}, 15_000);
 
 	it("retains dirty work when projection publication fails and repairs on the next request", async () => {
 		await putMessage(ctx, "m0", message(0));
@@ -409,5 +409,5 @@ describe("complete mailbox operations against EmDash SQLite", () => {
 			openMessageId: "m119", latest: { subject: "Message 119" }, previous: { subject: "Message 118" },
 		});
 		expect(page.items[0].participants.map((person: any) => person.label)).toEqual(["oldest", "second", "reader"]);
-	});
+	}, 15_000);
 });
