@@ -46,4 +46,4 @@ The existing normal passkey-authenticated production session was used. The final
 
 See the [accessibility and interaction review](daylight-accessibility-2026-09-17.md) for final contrast ratios, keyboard wrapping, mobile measurements, fresh-compose reset, and historical search coverage.
 
-Bundles/highlights, reminders, labels, bulk triage, undo, scheduled sending, signatures, templates, forwarding, and PDF visual previews remain future work in the design specification.
+At this rollout, bundles/highlights, reminders, labels, bulk triage, undo, scheduled sending, signatures, templates, forwarding, and PDF visual previews remained future work. The subsequent [M9.1 rollout](m9-bundles-production-2026-09-17.md) deployed bundles and bundle completion later on September 17.

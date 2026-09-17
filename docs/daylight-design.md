@@ -12,8 +12,8 @@ Status: core mail UI deployed on PBWeb from `codex/daylight-mail-ui` on Septembe
 
 | Surface | Figma node(s) | Implementation | Verification | Remaining gap |
 | --- | --- | --- | --- | --- |
-| Main inbox, Top navigation | 30:412 | Daylight shell, greeting, dates, unread states, functional folder shortcuts | Local desktop browser inspection; existing mailbox tests | Highlights remain future. Bundles are a separate local addition below. Shortcuts open Pinned, Snoozed, and Drafts. |
-| M9.1 bundles | Page 100:411 | Grouped Inbox, manual correction, exact-sender rules, settings, durable completion and results; mobile bottom navigation | 541 automated tests, typecheck/native validation, Top/Left and 390/320px browser checks; see the bundle specification | Not deployed; physical assistive-technology acceptance remains |
+| Main inbox, Top navigation | 30:412 | Daylight shell, greeting, dates, unread states, functional folder shortcuts | Local desktop browser inspection; existing mailbox tests | Highlights remain future. Bundles are deployed as the addition below. Shortcuts open Pinned, Snoozed, and Drafts. |
+| M9.1 bundles | Page 100:411 | Grouped Inbox, manual correction, exact-sender rules, settings, durable completion and results; mobile bottom navigation | 541 automated tests, typecheck/native validation, Top/Left and 390/320px browser checks; live correction, completion and preference checks | Physical assistive-technology acceptance remains |
 | Left navigation / appearance | 37:1539 | Account-scoped Top/Left preference; responsive fallback | Live preference persisted across dashboard return; layout switch retained unsaved draft text; isolation and failed-save tests | Real touch-device acceptance |
 | Expanded Inbox | Inbox layout states | Stable portal host fills the browser viewport; dashboard return link; restores background state on exit | Live expanded/embedded round trip; draft DOM identity, modal reopening, inert/scroll restoration tests | Small-screen browser chrome acceptance |
 | Read thread / history | 68:412, 74:2519, 76:959 | Desktop split pane, narrow thread page, recipient details, collapsed earlier messages, pin/done/snooze | Desktop and 390px container inspection; existing thread-action tests | No new threading semantics |
@@ -81,6 +81,6 @@ Manrope is the Google Fonts variable font from [google/fonts](https://github.com
 
 ## Next slice
 
-M9.1 is implemented and locally tested: see the [bundle specification and verification](m9-bundles-design.md). The Figma page and implementation cover grouping, corrections, completion and recovery in Top, Left and mobile layouts.
+M9.1 is deployed: see the [bundle rollout report](m9-bundles-production-2026-09-17.md) and [specification](m9-bundles-design.md). The Figma page and implementation cover grouping, corrections, completion and recovery in Top, Left and mobile layouts.
 
-After the bundle release, take on highlights as a separate backend and UI slice; reminders and content linking remain later work. Complete real touch-device and assistive-technology acceptance. Keep future controls in Figma until their behavior exists. PBWeb's checkout still pins the deployed Daylight baseline archive.
+Take on highlights as a separate backend and UI slice; reminders and content linking remain later work. Complete real touch-device and assistive-technology acceptance. Keep future controls in Figma until their behavior exists. PBWeb's checkout pins the exact deployed M9.1 archive.
