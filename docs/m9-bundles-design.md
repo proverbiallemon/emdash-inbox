@@ -141,7 +141,7 @@ Browser acceptance on September 17 covered:
 | Loading and errors | Indexing and overview failures do not claim the Inbox is empty; Refresh recovers |
 | Narrow screens and keyboard | Top/Left desktop and actual 390/320px viewports inspected; new controls at least 44px; bottom navigation visible; wrapped sender address and scrollable dialogs; Tab wrapping and Escape focus restoration exercised |
 
-Final implementation validation at `5c87fb5`: **541 tests across 43 files passed**, TypeScript passed, and native validation built both exports and checked 20 MCP tools / 2 admin pages. Browser follow-up confirmed conversation-only recovery after declining a conflicting sender rule, refreshed operation results after reading/snoozing, and the full-window/dashboard-view round trip. These checks use synthetic mail; no live email was sent and no production deployment occurred. Physical touch-device and screen-reader acceptance remain unverified.
+Final implementation validation at `534ce72`: **541 tests across 43 files passed**, TypeScript passed, and native validation built both exports and checked 20 MCP tools / 2 admin pages. Browser follow-up confirmed conversation-only recovery after declining a conflicting sender rule, refreshed operation results after reading/snoozing, the full-window/dashboard-view round trip, and singular conversation labels after corrections. These checks use synthetic mail; no live email was sent and no production deployment occurred. Physical touch-device and screen-reader acceptance remain unverified.
 
 ## Figma coverage
 
