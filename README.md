@@ -102,7 +102,9 @@ The Daylight mail UI adds account-specific Top/Left navigation, an expanded wind
 
 Daylight is deployed on PBWeb with EmDash 0.38.0. The [September 17 rollout report](docs/daylight-production-2026-09-17.md) records the exact build, live checks, and remaining acceptance limits.
 
-Run `pnpm dev:preview` from a source checkout to open the real UI with synthetic mail at `http://127.0.0.1:4317/`. The preview sends no email and resets on refresh. Production still uses EmDash's authenticated plugin routes.
+The source checkout also includes M9.1 bundles: six Inbox categories, conversation corrections, optional exact-sender rules, account grouping preferences, and resumable bundle completion. This addition is locally tested and has not been deployed to PBWeb. See the [bundle specification and verification](docs/m9-bundles-design.md).
+
+Run `pnpm dev:preview` from a source checkout to open the real UI with synthetic mail at `http://127.0.0.1:4317/`. The preview sends no email. **Reset sample mail** restores the fixture; refreshing retains synthetic bundle-operation state for recovery checks. Production still uses EmDash's authenticated plugin routes.
 
 ## Roadmap
 
@@ -119,7 +121,8 @@ Run `pnpm dev:preview` from a source checkout to open the real UI with synthetic
 | **M8b** ✅ | Private inbound/outbound attachments, complete thread pagination, resumable substring search, and server-side thread actions. Signatures and toast undo remain follow-up polish. |
 | **Send recovery** ✅ | Durable send attempts, locked Outbox, receipt recovery, stable request IDs, and explicit review of uncertain outcomes. |
 | **Daylight UI** | Deployed on PBWeb: Top/Left navigation, full-window mode, responsive read/compose, search, private attachment previews, and host-link draft protection. See the rollout report for acceptance coverage. |
-| **M9** | Bundle classification (Orders, Shipping, Commissions, Fans, Promos, Updates) + highlights — structured field extraction surfaced as inline cards. Reminders, content linking. **v1.0.** |
+| **M9.1 — Bundles** | Implemented and locally tested: Orders, Shipping, Commissions, Fans, Promos and Updates; manual corrections and exact-sender rules; grouping preferences; resumable completion with per-conversation outcomes. Not yet deployed. |
+| **M9 — Remaining** | Highlights: structured field extraction surfaced as inline cards. Reminders and content linking. **v1.0 remains future.** |
 
 ## Attribution
 
