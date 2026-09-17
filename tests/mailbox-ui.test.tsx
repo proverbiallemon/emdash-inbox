@@ -3,6 +3,7 @@ import * as React from 'react';
 import {createRoot, type Root} from 'react-dom/client';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {pages} from '../src/admin';
+import {ThreadView} from '../src/components/ThreadView';
 let container:HTMLDivElement;let root:Root;
 function row(id:string,status='inbox') {return {id,threadId:id,openMessageId:id,latest:{messageId:id,threadId:id,subject:id,from:'reader@example.com',to:'owner@example.com',direction:'inbound',status,bodyText:'Fixture',bodyHtml:null,receivedAt:'2026-09-16T00:00:00Z',sortAt:'2026-09-16T00:00:00Z',snoozeUntil:null},previous:null,participants:[],messageCount:1,unreadCount:1,pinned:false,sortAt:'2026-09-16T00:00:00Z',snoozeUntil:null};}
 function response(data:unknown) {return new Response(JSON.stringify({success:true,data}),{headers:{'Content-Type':'application/json'}});}
@@ -53,4 +54,14 @@ it('ignores a late search result after returning to Inbox',async()=>{
  await React.act(async()=>root.render(React.createElement(pages['/'] as React.ComponentType)));await flush();await click('Inbox');
  await React.act(async()=>search.resolve(response({items:[{id:'late',...row('Late match').latest}],hasMore:false})));await flush();
  expect(container.textContent).toContain('Inbox stays');expect(container.textContent).not.toContain('Late match');
+});
+
+it('reveals the older message selected by a search result',async()=>{
+ vi.stubGlobal('fetch',async()=>response({items:[
+  {id:'historical-hit',data:{...row('Historical subject').latest,bodyText:'Needle in the earlier message'}},
+  {id:'latest',data:{...row('Latest subject').latest,bodyText:'A later reply without the search term'}}
+ ]}));
+ await React.act(async()=>root.render(<ThreadView messageId="historical-hit" debug={false} onBack={()=>{}}/>));await flush();
+ const history=container.querySelector<HTMLDetailsElement>('.dl-history');
+ expect(history?.open).toBe(true);expect(history?.textContent).toContain('Needle in the earlier message');
 });

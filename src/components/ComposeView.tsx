@@ -11,6 +11,7 @@ import { useComposeOperation } from "../lib/useComposeOperation";
 import { useDeliveryAttempt, type SendResult } from "../lib/useDeliveryAttempt";
 import { DeliveryNotice } from "./DeliveryNotice";
 import { useLeaveGuard } from "../daylight/navigation";
+import { useConfirmation, leaveConfirmation } from "../daylight/useConfirmation";
 import { useEditorRevision } from "../daylight/useEditorRevision";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
@@ -55,6 +56,7 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 	const [editor, setEditor] = React.useState<Editor | null>(null);
 	const { busy, error, setError, run, locked } = useComposeOperation();
 	const delivery = useDeliveryAttempt();
+	const confirmation = useConfirmation();
 	useEditorRevision(editor);
 	// Fields as of the last successful save; null until something has been
 	// saved (fresh compose) or set from the loaded draft (resumed compose).
@@ -159,15 +161,20 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 		const current = { to, cc, bcc, subject, editorHTML: editor?.getHTML() ?? "" };
 		return (Object.keys(current) as (keyof ComposeSnapshot)[]).some(key => current[key] !== savedSnapshot[key]);
 	};
-	const canLeave = () => !locked.current && (delivery.isBlocked() || !isDirty() || window.confirm("Close without saving your changes?"));
+	const canLeave = async () => {
+		if (locked.current || confirmation.pending.current) return false;
+		if (delivery.isBlocked() || !isDirty()) return true;
+		return await confirmation.confirm(leaveConfirmation) && !locked.current;
+	};
 	useLeaveGuard({ canLeave, hasUnsaved: () => locked.current || (!delivery.isBlocked() && isDirty()) });
-	const handleClose = () => { if (canLeave()) onClose(); };
+	const handleClose = async () => { if (await canLeave()) onClose(); };
 
 	// Discard button: deletes the persisted draft (if any) after confirming,
 	// since this is the explicit "throw this away" action.
 	const handleDiscard = async () => {
 		if (locked.current || delivery.isBlocked() || (draftId !== null && initialHtml === null)) return;
-		if ((hasAnyContent() || currentDraftId) && !window.confirm("Discard this email?")) return;
+		if ((hasAnyContent() || currentDraftId) && !await confirmation.confirm({ title: "Discard this email?", description: "This removes the email and any saved draft attachments. This cannot be undone.", action: "Discard email" })) return;
+		if (locked.current || delivery.isBlocked()) return;
 		await run("discard", async () => {
 			if (currentDraft.current) await postInbox("messages/draft-discard", { draftId: currentDraft.current });
 			onClose();
@@ -190,6 +197,7 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 
 	return (
 		<div className="dl-composer" onKeyDown={onKeyDown}>
+			{confirmation.dialog}
 			<div className="dl-compose-heading">
 			<h1>{draftId ? "Edit draft" : "New message"}</h1>
 			<button type="button" disabled={busy !== null} className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50" onClick={handleClose}>

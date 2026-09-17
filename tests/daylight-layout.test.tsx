@@ -58,7 +58,7 @@ it("does not claim a layout was saved when the preference write fails",async()=>
 it("protects unsaved work on navigation and unload, then removes the guard on unmount",async()=>{
  const leave=vi.fn(()=>false);let allowed:boolean|undefined;
  function Guard(){useLeaveGuard({canLeave:leave,hasUnsaved:()=>true});return null;}
- function View({guard}:{guard:boolean}){const allow=useMailNavigation();return <>{guard&&<Guard />}<button onClick={()=>{allowed=allow();}}>Leave</button></>;}
+ function View({guard}:{guard:boolean}){const allow=useMailNavigation();return <>{guard&&<Guard />}<button onClick={async()=>{allowed=await allow();}}>Leave</button></>;}
  await act(()=>root.render(<NavigationProvider><View guard /></NavigationProvider>));
  await act(()=>button("Leave").click());expect(allowed).toBe(false);expect(leave).toHaveBeenCalledTimes(1);
  const event=new Event("beforeunload",{cancelable:true});window.dispatchEvent(event);expect(event.defaultPrevented).toBe(true);

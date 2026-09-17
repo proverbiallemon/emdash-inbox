@@ -25,8 +25,9 @@ describe("compose attachment interactions", () => {
 	let container: HTMLDivElement; let root: Root;
 	beforeEach(() => {
 		(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+	Object.defineProperty(HTMLDialogElement.prototype,"showModal",{configurable:true,value:function(){this.open=true;}});
+	Object.defineProperty(HTMLDialogElement.prototype,"close",{configurable:true,value:function(){this.open=false;}});
 		container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 	});
 	afterEach(async () => { await React.act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 	async function render(element: React.ReactNode) { await React.act(async () => { root.render(element); }); }
@@ -117,7 +118,7 @@ describe("compose attachment interactions", () => {
 			? response({ items: [{ id: "draft-1", to: [], cc: [], bcc: [], subject: "Saved", bodyText: "Draft body", bodyHtml: "<p>Draft body</p>", threadId: null, attachments: [metadata] }] })
 			: new Response(JSON.stringify({ error: { message: "Discard failed" } }), { status: 503 }));
 		await render(React.createElement(ComposeView, { draftId: "draft-1", onClose: () => { closed++; } }));
-		await click("Discard"); expect(closed).toBe(0); expect(container.textContent).toContain("Discard failed"); expect(container.textContent).toContain("one.txt");
+		await click("Discard"); await click("Discard email"); expect(closed).toBe(0); expect(container.textContent).toContain("Discard failed"); expect(container.textContent).toContain("one.txt");
 	});
 
 	it("sends an attached reply through its saved draft and cannot abort that send using Discard or Escape", async () => {
@@ -145,7 +146,7 @@ describe("compose attachment interactions", () => {
 		});
 		await render(React.createElement(ReplyCompose, { defaults: { to: "reader@example.com", subject: "Re: files", quoteHtml: "" }, inReplyTo: "<parent@example.com>", threadId: "thread", onSent() {}, onDiscard: () => { closed++; } }));
 		await selectFiles([file()]); await click("Close"); expect(closed).toBe(1); expect(calls.some((call) => call.path.includes("discard"))).toBe(false);
-		await click("Discard"); expect(calls.at(-1)?.body).toEqual({ draftId: "reply-draft" }); expect(calls.at(-1)?.path).toContain("draft-discard"); expect(closed).toBe(2);
+		await click("Discard"); await click("Discard reply"); expect(calls.at(-1)?.body).toEqual({ draftId: "reply-draft" }); expect(calls.at(-1)?.path).toContain("draft-discard"); expect(closed).toBe(2);
 	});
 
 	it("downloads using an octet-stream object URL and revokes it after the click", async () => {

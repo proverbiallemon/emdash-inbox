@@ -35,6 +35,7 @@ Status: core mail UI deployed on PBWeb from `codex/daylight-mail-ui` on Septembe
 - Existing HTML sanitization and remote-image gating are preserved. Attachment preview accepts plain text and signature-checked PNG/JPEG/GIF/WebP only. HTML/SVG are never injected, and generated object URLs are revoked on close. Downloads keep the original authenticated octet-stream path.
 - Pending, uncertain, and unconfirmed delivery attempts remain protected. Leaving to review Outbox is allowed; replacing a reply with another reply mode cannot remove its lock.
 - Explicit save remains the product behavior. Plugin navigation and page links (including EmDash's own sidebar) ask before abandoning unsaved changes, and in-flight mutations prevent navigation. New-tab links and downloads remain usable. The existing send/recipient validation remains authoritative.
+- Confirmation and link-editing popups use Daylight dialogs with named actions, focus restoration, and explicit Tab wrapping. Closing/reloading a browser tab still uses its native warning. The [accessibility and interaction review](daylight-accessibility-2026-09-17.md) records contrast, keyboard, mobile and recovery checks.
 
 ## Local preview and validation
 

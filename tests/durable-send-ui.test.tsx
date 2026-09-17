@@ -30,6 +30,8 @@ async function fill(label: string, value: string) {
 }
 beforeEach(() => {
 	(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+	Object.defineProperty(HTMLDialogElement.prototype,"showModal",{configurable:true,value:function(){this.open=true;}});
+	Object.defineProperty(HTMLDialogElement.prototype,"close",{configurable:true,value:function(){this.open=false;}});
 	window.history.replaceState({}, "", "/_emdash/admin/plugins/emdash-inbox");
 	container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -277,12 +279,11 @@ it("appends Outbox pages without duplicating moving attempts", async () => {
 it('guards folder changes and reply-mode switches without discarding unsaved edits', async () => {
  window.history.replaceState({}, '', '/_emdash/admin/plugins/emdash-inbox?message=parent-row');
  vi.stubGlobal('fetch', async (path:string) => path.endsWith('ui/preferences') ? response({preferences:{navigation:'top',fullWindow:false},canSave:false}) : path.endsWith('messages/thread') ? threadResponse() : response({items:[],hasMore:false}));
- const confirm=vi.spyOn(window,'confirm').mockReturnValue(false);
  await render(React.createElement(pages['/'] as React.ComponentType));
  await click('↩ Reply');await fill('Subject','Do not lose this');const input=subjectInput();
- await click('↩↩ Reply all');expect(subjectInput()).toBe(input);expect(subjectInput()?.value).toBe('Do not lose this');
- await click('Inbox');expect(subjectInput()).toBe(input);expect(confirm).toHaveBeenCalledTimes(2);
- confirm.mockReturnValue(true);await click('Inbox');expect(subjectInput()).toBeUndefined();expect(confirm).toHaveBeenCalledTimes(3);
+ await click('↩↩ Reply all');await click('Keep editing');expect(subjectInput()).toBe(input);expect(subjectInput()?.value).toBe('Do not lose this');
+ await click('Inbox');await click('Keep editing');expect(subjectInput()).toBe(input);
+ await click('Inbox');await click('Leave without saving');expect(subjectInput()).toBeUndefined();
 });
 
 it.each(['pending','uncertain'])('keeps a %s reply locked when switching reply mode',async(deliveryStatus)=>{
@@ -296,4 +297,35 @@ it.each(['pending','uncertain'])('keeps a %s reply locked when switching reply m
  });
  await render(React.createElement(pages['/'] as React.ComponentType));await click('↩ Reply');await click('Send');const input=subjectInput();
  await click('↩↩ Reply all');expect(subjectInput()).toBe(input);expect(button('Send').disabled).toBe(true);expect(sends).toBe(1);
+});
+
+it('starts a fresh composer only after confirming New message, without reusing its saved draft',async()=>{
+ const saves:any[]=[];
+ vi.stubGlobal('fetch',async(path:string,init:RequestInit)=>{
+  if(path.endsWith('ui/preferences'))return response({preferences:{navigation:'top',fullWindow:false},canSave:false});
+  if(path.endsWith('draft-save')){saves.push(JSON.parse(init.body as string));return response({draftId:'saved-original'});}
+  return response({items:[],hasMore:false});
+ });
+ await render(React.createElement(pages['/'] as React.ComponentType));await click('+ New message');
+ await fill('To','original@example.com');await fill('Subject','Original draft');await click('Save as draft');
+ await fill('Subject','Unsaved original');const original=subjectInput();
+ await click('+ New message');await click('Keep editing');expect(subjectInput()).toBe(original);expect(subjectInput()?.value).toBe('Unsaved original');
+ await click('+ New message');await click('Leave without saving');
+ expect(subjectInput()).not.toBe(original);expect(subjectInput()?.value).toBe('');
+ expect(container.querySelector<HTMLInputElement>('input[placeholder="a@example.com, b@example.com"]')?.value).toBe('');
+ await click('Save as draft');expect(saves.at(-1).draftId).toBeUndefined();
+});
+
+it.each(['pending','uncertain','unconfirmed'])('keeps a %s reply locked when reopening the selected conversation',async(deliveryStatus)=>{
+ window.history.replaceState({}, '', '/_emdash/admin/plugins/emdash-inbox?message=parent-row');let sends=0;
+ vi.stubGlobal('fetch',async(path:string)=>{
+  if(path.endsWith('ui/preferences'))return response({preferences:{navigation:'top',fullWindow:false},canSave:false});
+  if(path.endsWith('messages/thread'))return threadResponse();
+  if(path.endsWith('messages/reply')){sends++;if(deliveryStatus==='unconfirmed')throw new TypeError('Response lost');return response({id:null,threadId:null,attemptId:'locked-reply',deliveryStatus});}
+  const {data:{items}}=await threadResponse().json();
+  return response({items:[{id:'thread',threadId:'thread',openMessageId:'parent-row',latest:items[0].data,previous:null,participants:[],messageCount:1,unreadCount:0,pinned:false,sortAt:'2026-09-16T00:00:00Z',snoozeUntil:null}],hasMore:false});
+ });
+ await render(React.createElement(pages['/'] as React.ComponentType));await click('↩ Reply');await click('Send');const input=subjectInput();
+ await React.act(async()=>{container.querySelector<HTMLButtonElement>('[aria-label="Open Hello"]')!.click();});
+ expect(subjectInput()).toBe(input);expect(button('Send').disabled).toBe(true);expect(sends).toBe(1);
 });

@@ -9,6 +9,7 @@ import { TipTapEditor } from "./TipTapEditor";
 import { ComposeToolbar } from "./ComposeToolbar";
 import { DraftAttachments } from "./DraftAttachments";
 import { useLeaveGuard } from "../daylight/navigation";
+import { useConfirmation, leaveConfirmation } from "../daylight/useConfirmation";
 import { useEditorRevision } from "../daylight/useEditorRevision";
 
 export interface ReplyComposeDefaults {
@@ -38,6 +39,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard,
 	const currentDraft = React.useRef<string | null>(null);
 	const { busy, error, setError, run, locked } = useComposeOperation();
 	const delivery = useDeliveryAttempt();
+	const confirmation = useConfirmation();
 	useEditorRevision(editor);
 	const disabled = busy !== null || delivery.status !== null;
 
@@ -96,12 +98,17 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard,
 		await postInbox("attachments/remove", { draftId: currentDraft.current, attachmentId });
 		setAttachments((current) => current.filter((file) => file.id !== attachmentId));
 	});
-	const canLeave = () => !locked.current && (delivery.isBlocked() || !isDirty() || window.confirm("Close without saving your changes?"));
-	useLeaveGuard({ canLeave, canReplace: () => !delivery.isBlocked() && canLeave(), hasUnsaved: () => locked.current || (!delivery.isBlocked() && isDirty()) });
-	const handleClose = () => { if (canLeave()) onDiscard(); };
+	const canLeave = async () => {
+		if (locked.current || confirmation.pending.current) return false;
+		if (delivery.isBlocked() || !isDirty()) return true;
+		return await confirmation.confirm(leaveConfirmation) && !locked.current;
+	};
+	useLeaveGuard({ canLeave, canReplace: async () => !delivery.isBlocked() && await canLeave() && !delivery.isBlocked(), hasUnsaved: () => locked.current || (!delivery.isBlocked() && isDirty()) });
+	const handleClose = async () => { if (await canLeave()) onDiscard(); };
 	const handleDiscard = async () => {
 		if (locked.current || delivery.isBlocked()) return;
-		if ((isDirty() || currentDraft.current) && !window.confirm("Discard this reply?")) return;
+		if ((isDirty() || currentDraft.current) && !await confirmation.confirm({ title: "Discard this reply?", description: "This removes the reply and any saved draft attachments. The conversation will stay in your mailbox.", action: "Discard reply" })) return;
+		if (locked.current || delivery.isBlocked()) return;
 		await run("discard", async () => {
 			if (currentDraft.current) await postInbox("messages/draft-discard", { draftId: currentDraft.current });
 			onDiscard();
@@ -116,6 +123,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard,
 	const buttonClass = "text-sm px-4 py-1.5 rounded border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed";
 
 	return <div className="dl-composer dl-reply-composer" onKeyDown={onKeyDown}>
+		{confirmation.dialog}
 		<div className="dl-compose-status"><strong>{defaults.cc !== undefined ? "Reply all" : "Reply"}</strong><span role="status">{busy === "save" ? "Saving draft…" : isDirty() ? "Unsaved changes" : currentDraft.current ? "Draft saved" : "Write your reply"}</span></div>
 		{error && <div role="alert" className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>}
 		<DeliveryNotice status={delivery.status} attemptId={delivery.attemptId} busy={busy !== null} onCheck={() => void run("send", async () => { handleResult(await delivery.check()); })} />

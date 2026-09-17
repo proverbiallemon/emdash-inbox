@@ -36,6 +36,7 @@ function InboxWorkspace() {
  const [status, setStatus] = React.useState<TabId>(readStatus);
  const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(() => param("message"));
  const [composeId, setComposeId] = React.useState<string | null>(() => param("compose"));
+ const [composeSession, setComposeSession] = React.useState(0);
  const [query, setQuery] = React.useState(() => param("q") ?? "");
  const [rows, setRows] = React.useState<ThreadSummary[]>([]);
  const [drafts, setDrafts] = React.useState<DraftListItem[]>([]);
@@ -95,10 +96,13 @@ function InboxWorkspace() {
  React.useEffect(() => { void refetch(); return () => { pages.current.reset(); }; }, [refetch]);
  React.useEffect(() => { writeUrl(status, selectedMessageId, composeId, query); }, [status, selectedMessageId, composeId, query]);
 
- const navigate = (action: () => void) => { if (allow()) { action(); setSnoozingThread(null); } };
+ const navigate = async (action: () => void) => { if (await allow()) { action(); setSnoozingThread(null); } };
  const changeStatus = (next: TabId) => navigate(() => { setStatus(next); setQuery(""); setSelectedMessageId(null); setComposeId(null); setNotice(null); });
- const openMessage = (id: string) => navigate(() => { setComposeId(null); setSelectedMessageId(id); });
- const openCompose = (id = "new") => navigate(() => { if (status === "outbox") setStatus("drafts"); setSelectedMessageId(null); setComposeId(id); });
+ const openMessage = (id: string) => {
+  if (composeId === null && selectedMessageId === id) return;
+  void navigate(() => { setComposeId(null); setSelectedMessageId(id); });
+ };
+ const openCompose = (id = "new") => navigate(() => { setComposeSession(current => current + 1); if (status === "outbox") setStatus("drafts"); setSelectedMessageId(null); setComposeId(id); });
  const search = (next: string) => navigate(() => { setQuery(next); setStatus("all"); setComposeId(null); setSelectedMessageId(null); });
  const actOnThread = async (summary: ThreadSummary, action: Record<string, unknown>) => {
   if (busyThreadIds.has(summary.id)) return;
@@ -147,7 +151,7 @@ function InboxWorkspace() {
     </>}
    </section>
    {details && <section className="dl-detail" aria-label={composeId ? "Compose message" : "Conversation"}>
-    {composeId !== null ? <ComposeView key={composeId} draftId={composeId === "new" ? null : composeId} onSent={() => setNotice("Message accepted for delivery. You can review it in All mail.")} onClose={() => { setComposeId(null); void refetch(undefined, false, true); }} /> :
+    {composeId !== null ? <ComposeView key={`${composeId}:${composeSession}`} draftId={composeId === "new" ? null : composeId} onSent={() => setNotice("Message accepted for delivery. You can review it in All mail.")} onClose={() => { setComposeId(null); void refetch(undefined, false, true); }} /> :
      <ThreadView key={selectedMessageId} messageId={selectedMessageId!} debug={debug} senderAddress={ui.senderAddress} onRead={markRead} onChanged={() => void refetch(undefined, false, true)} onBack={() => navigate(() => setSelectedMessageId(null))} />}
    </section>}
   </div>}

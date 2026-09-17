@@ -44,6 +44,7 @@ export function ThreadView({ messageId, debug, onBack, onRead, onChanged, sender
 	const [error, setError] = React.useState<string | null>(null);
 	const [revealedImages, setRevealedImages] = React.useState<Set<string>>(new Set());
 	const [snoozingOpen, setSnoozingOpen] = React.useState(false);
+	const [historyOpen, setHistoryOpen] = React.useState(false);
 	// Gate concurrent bulk calls so a second action can't clobber the first's
 	// optimistic state or failure-revert. Action buttons disable while busy.
 	const [busy, setBusy] = React.useState(false);
@@ -70,6 +71,7 @@ export function ThreadView({ messageId, debug, onBack, onRead, onChanged, sender
 				"Failed to load thread",
 			);
 			setThread(data.items);
+			if (!refresh) setHistoryOpen(data.items.slice(0, -1).some(message => message.id === messageId));
 			if (data.items[0]) onReadRef.current?.(data.items[0].data.threadId ?? data.items[0].data.messageId);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
@@ -97,8 +99,8 @@ export function ThreadView({ messageId, debug, onBack, onRead, onChanged, sender
 	const handlePin = (pinned: boolean) => actOnThread({ action: "pin", pinned });
 	const handleStatus = (status: "inbox" | "done") => actOnThread({ action: "status", status });
 
-	const handleReply = () => { if (replyMode !== "reply" && allow()) setReplyMode("reply"); };
-	const handleReplyAll = () => { if (replyMode !== "reply-all" && allow()) setReplyMode("reply-all"); };
+	const handleReply = async () => { if (replyMode !== "reply" && await allow()) setReplyMode("reply"); };
+	const handleReplyAll = async () => { if (replyMode !== "reply-all" && await allow()) setReplyMode("reply-all"); };
 	const handleReplySent = async () => {
 		setReplyMode(null);
 		setNotice("Reply accepted for delivery.");
@@ -201,7 +203,7 @@ export function ThreadView({ messageId, debug, onBack, onRead, onChanged, sender
 				/>
 			</ThreadHeader>
 			<div className="relative">
-				{thread.length > 1 && <details className="dl-history"><summary>{thread.length - 1} earlier {thread.length === 2 ? "message" : "messages"} · Show conversation</summary><div className="dl-history-content">{thread.slice(0, -1).map(m => <ThreadMessage key={m.id} row={m} showImages={revealedImages.has(m.id)} onRevealImages={() => setRevealedImages(current => new Set(current).add(m.id))} />)}</div></details>}
+				{thread.length > 1 && <details className="dl-history" open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}><summary>{thread.length - 1} earlier {thread.length === 2 ? "message" : "messages"} · Show conversation</summary><div className="dl-history-content">{thread.slice(0, -1).map(m => <ThreadMessage key={m.id} row={m} showImages={revealedImages.has(m.id)} onRevealImages={() => setRevealedImages(current => new Set(current).add(m.id))} />)}</div></details>}
 				{thread.slice(-1).map((m) => (
 					<ThreadMessage
 						key={m.id}
