@@ -1,265 +1,162 @@
 import type { PluginAdminExports } from "emdash";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
-import { FilterTabs, type StatusFilter, type TabId } from "./components/FilterTabs";
+import { MAIL_TABS, type TabId } from "./components/FilterTabs";
 import { ThreadCard } from "./components/ThreadCard";
 import { PageSession } from "./lib/pageSession";
-import type { ThreadSummary } from "./lib/threadSummary";
+import type { ThreadSummary, MessageView } from "./lib/threadSummary";
 import { SnoozePicker } from "./components/SnoozePicker";
 import { DateBuckets } from "./components/DateBuckets";
-import { EmptyState } from "./components/EmptyState";
-import { SkeletonList } from "./components/SkeletonList";
 import { ThreadView } from "./components/ThreadView";
 import { SettingsPage } from "./components/SettingsPage";
 import { ComposeView } from "./components/ComposeView";
 import { DraftCard, type DraftListItem } from "./components/DraftCard";
 import { OutboxView } from "./components/OutboxView";
+import { DaylightShell } from "./daylight/Shell";
+import { Dialog } from "./daylight/Dialog";
+import { NavigationProvider, useMailNavigation } from "./daylight/navigation";
+import { useInboxPreferences } from "./daylight/preferences";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
-
-function readStatusFromUrl(): TabId {
-	const s = new URLSearchParams(window.location.search).get("status");
-	return s === "snoozed" || s === "done" || s === "all" || s === "drafts" || s === "outbox" ? s : "inbox";
+function param(key: string) { return new URLSearchParams(window.location.search).get(key); }
+function readStatus(): TabId { const value = param("status"); return MAIL_TABS.find(tab => tab.id === value)?.id ?? "inbox"; }
+function writeUrl(status: TabId, message: string | null, compose: string | null, query: string) {
+ const url = new URL(window.location.href);
+ for (const [key, value] of Object.entries({ status: status === "inbox" ? null : status, message, compose, q: query || null })) {
+  if (value) url.searchParams.set(key, value); else url.searchParams.delete(key);
+ }
+ window.history.replaceState(window.history.state, "", url.toString());
 }
-
-function readMessageFromUrl(): string | null {
-	return new URLSearchParams(window.location.search).get("message");
+function searchSummary(message: MessageView & { id: string }): ThreadSummary {
+ return { id: message.id, threadId: message.threadId ?? message.messageId, openMessageId: message.id,
+  latest: message, previous: null, messageCount: 1, unreadCount: message.read ? 0 : 1, participants: [],
+  pinned: message.pinned, sortAt: message.sortAt, snoozeUntil: message.snoozeUntil };
 }
+function InboxWorkspace() {
+ const [status, setStatus] = React.useState<TabId>(readStatus);
+ const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(() => param("message"));
+ const [composeId, setComposeId] = React.useState<string | null>(() => param("compose"));
+ const [composeSession, setComposeSession] = React.useState(0);
+ const [query, setQuery] = React.useState(() => param("q") ?? "");
+ const [rows, setRows] = React.useState<ThreadSummary[]>([]);
+ const [drafts, setDrafts] = React.useState<DraftListItem[]>([]);
+ const [loading, setLoading] = React.useState(true);
+ const [error, setError] = React.useState<string | null>(null);
+ const [notice, setNotice] = React.useState<string | null>(null);
+ const [snoozingThread, setSnoozingThread] = React.useState<ThreadSummary | null>(null);
+ const [busyThreadIds, setBusyThreadIds] = React.useState<Set<string>>(new Set());
+ const [cursor, setCursor] = React.useState<string | undefined>();
+ const [hasMore, setHasMore] = React.useState(false);
+ const [loadingMore, setLoadingMore] = React.useState(false);
+ const [indexing, setIndexing] = React.useState(false);
+ const pages = React.useRef(new PageSession<ThreadSummary>());
+ const viewRef = React.useRef("");
+ viewRef.current = `${status}|${query}`;
+ const allow = useMailNavigation();
+ const ui = useInboxPreferences();
+ const debug = React.useMemo(() => param("debug") === "1", []);
 
-function readDebugFromUrl(): boolean {
-	return new URLSearchParams(window.location.search).get("debug") === "1";
+ const refetch = React.useCallback(async (nextCursor?: string, append = false, quiet = false) => {
+  if (status === "outbox") { setLoading(false); return; }
+  const generation = append ? pageGeneration.current : (pageGeneration.current = pages.current.reset());
+  if (append) setLoadingMore(true);
+  else if (!quiet) { setLoading(true); setRows([]); setHasMore(false); }
+  setError(null); setIndexing(false);
+  try {
+   if (status === "drafts" && !query) {
+    const response = await apiFetch(`${API}/messages/drafts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const data = await parseApiResponse<{ items: DraftListItem[] }>(response, "Failed to load drafts");
+    if (pages.current.current(generation)) { setDrafts(data.items); setHasMore(false); }
+    return;
+   }
+   for (let attempt = 0; attempt < 20; attempt++) {
+    const response = await apiFetch(`${API}/${query ? "messages/search" : "threads/list"}`, {
+     method: "POST", headers: { "Content-Type": "application/json" },
+     body: JSON.stringify(query ? { query, limit: 25, cursor: nextCursor } : { status: status === "pinned" ? "all" : status, ...(status === "pinned" ? { pinnedOnly: true } : {}), limit: 25, cursor: nextCursor }),
+    });
+    const data = await parseApiResponse<{ items: ThreadSummary[] | (MessageView & { id: string })[]; cursor?: string; hasMore: boolean; indexing?: boolean }>(response, "Failed to load messages");
+    if (!pages.current.current(generation)) return;
+    setIndexing(Boolean(data.indexing));
+    if (data.indexing) {
+     if (attempt === 19) throw new Error("Mailbox indexing is still in progress. Use Refresh to continue.");
+     await new Promise(resolve => setTimeout(resolve, 350));
+     if (!pages.current.current(generation)) return;
+     continue;
+    }
+    const incoming = query ? (data.items as (MessageView & { id: string })[]).map(searchSummary) : data.items as ThreadSummary[];
+    const items = pages.current.accept(generation, incoming, append);
+    if (items) setRows(items);
+    setCursor(data.cursor); setHasMore(data.hasMore);
+    break;
+   }
+  } catch (caught) { if (pages.current.current(generation)) setError(caught instanceof Error ? caught.message : String(caught)); }
+  finally { if (pages.current.current(generation)) { setLoading(false); setLoadingMore(false); } }
+ }, [status, query]);
+ const pageGeneration = React.useRef(0);
+ React.useEffect(() => { void refetch(); return () => { pages.current.reset(); }; }, [refetch]);
+ React.useEffect(() => { writeUrl(status, selectedMessageId, composeId, query); }, [status, selectedMessageId, composeId, query]);
+
+ const navigate = async (action: () => void) => { if (await allow()) { action(); setSnoozingThread(null); } };
+ const changeStatus = (next: TabId) => navigate(() => { setStatus(next); setQuery(""); setSelectedMessageId(null); setComposeId(null); setNotice(null); });
+ const openMessage = (id: string) => {
+  if (composeId === null && selectedMessageId === id) return;
+  void navigate(() => { setComposeId(null); setSelectedMessageId(id); });
+ };
+ const openCompose = (id = "new") => navigate(() => { setComposeSession(current => current + 1); if (status === "outbox") setStatus("drafts"); setSelectedMessageId(null); setComposeId(id); });
+ const search = (next: string) => navigate(() => { setQuery(next); setStatus("all"); setComposeId(null); setSelectedMessageId(null); });
+ const actOnThread = async (summary: ThreadSummary, action: Record<string, unknown>) => {
+  if (busyThreadIds.has(summary.id)) return;
+  const actionView = viewRef.current;
+  setBusyThreadIds(current => new Set(current).add(summary.id)); setError(null);
+  try {
+   const response = await apiFetch(`${API}/threads/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId: summary.threadId, ...action }) });
+   await parseApiResponse(response, "Failed to update thread");
+   if (viewRef.current === actionView) await refetch(undefined, false, true);
+  } catch (caught) { if (viewRef.current === actionView) setError(caught instanceof Error ? caught.message : String(caught)); }
+  finally { setBusyThreadIds(current => { const next = new Set(current); next.delete(summary.id); return next; }); }
+ };
+ const markRead = React.useCallback((threadId: string) => {
+  setRows(current => current.map(row => row.threadId === threadId ? { ...row, unreadCount: 0 } : row));
+ }, []);
+ const details = selectedMessageId !== null || composeId !== null;
+ const folder = MAIL_TABS.find(tab => tab.id === status)?.label ?? "Inbox";
+ const hour = new Date().getHours();
+ const greeting = `Good ${hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening"}${ui.name ? ", " + ui.name.split(" ")[0] : ""}.`;
+ const title = query ? "Search results" : status === "inbox" && !details ? greeting : folder;
+ const summary = query ? `Subject and message text matching “${query}”` : new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+ const threadCard = (row: ThreadSummary) => <ThreadCard key={row.id} row={row} selected={selectedMessageId === row.openMessageId} busy={busyThreadIds.has(row.id)}
+  onOpen={openMessage} onPinToggle={(item, pinned) => void actOnThread(item, { action: "pin", pinned })}
+  onDone={item => void actOnThread(item, { action: "status", status: "done" })} onSnoozeRequest={setSnoozingThread} />;
+
+ return <DaylightShell ui={ui} status={status} onStatus={changeStatus} query={query} onSearch={search} onCompose={() => openCompose()}>
+  <div className="dl-page-heading"><div><h1>{title}</h1><p>{summary}</p></div><button type="button" className="dl-button dl-primary" onClick={() => openCompose()}>+ New message</button></div>
+  {notice && <div className="dl-notice" role="status">{notice} <button type="button" className="dl-button dl-subtle" aria-label="Dismiss notification" onClick={() => setNotice(null)}>×</button></div>}
+  {!details && !query && status === "inbox" && <div className="dl-shortcuts">
+   <button type="button" className="dl-shortcut" onClick={() => changeStatus("pinned")}><span className="dl-eyebrow">KEEP CLOSE</span><strong>Pinned mail</strong><small>The mail you want within reach →</small></button>
+   <button type="button" className="dl-shortcut" onClick={() => changeStatus("snoozed")}><span className="dl-eyebrow">A LITTLE LATER</span><strong>On your own time</strong><small>Snoozed mail returns when you’re ready →</small></button>
+   <button type="button" className="dl-shortcut" onClick={() => changeStatus("drafts")}><span className="dl-eyebrow">PICK UP AGAIN</span><strong>A thought in progress</strong><small>Keep writing where you left off →</small></button>
+  </div>}
+  {status === "outbox" && !details ? <div className="dl-outbox"><OutboxView /></div> : <div className="dl-content" data-detail={details}>
+   <section className="dl-list-column" aria-label={query ? "Matching messages" : "Conversations"}>
+    <div className="dl-list-toolbar"><span>{loading ? "Loading your mail…" : status === "drafts" ? `${drafts.length} drafts` : `${rows.length}${hasMore ? "+" : ""} ${query ? "matching messages" : "conversations"}`}</span><button type="button" className="dl-button dl-subtle" disabled={loading || loadingMore} onClick={() => void refetch()}>Refresh</button></div>
+    {indexing && <p role="status" className="dl-muted">Updating the mailbox index…</p>}
+    {error && <p role="alert">{error}</p>}
+    {loading ? <div aria-label="Loading mail" aria-busy="true">{[0, 1, 2, 3].map(item => <div key={item} className="dl-skeleton" />)}</div> : status === "drafts" && !query ? <>
+     {drafts.map(draft => <DraftCard key={draft.id} draft={draft} onOpen={openCompose} />)}
+     {!drafts.length && !error && <div className="dl-empty"><h2>A fresh start.</h2><p className="dl-muted">Start a new message. Save it as a draft whenever you like.</p></div>}
+    </> : <>
+     {query ? <div className="dl-bucket-rows">{rows.map(threadCard)}</div> : <DateBuckets rows={rows} field={status === "snoozed" ? "snoozeUntil" : "sortAt"} direction={status === "snoozed" ? "future" : "past"} renderRow={threadCard} />}
+     {!rows.length && !error && !indexing && <div className="dl-empty"><h2>{query ? hasMore ? "Keep looking." : "No matches yet." : status === "inbox" ? "A little breathing room." : "Nothing here yet."}</h2><p className="dl-muted">{query ? hasMore ? "There’s more of your mailbox to search." : "Try another word or phrase." : status === "inbox" ? "Your inbox is clear. Enjoy the space." : `Mail in ${folder.toLowerCase()} will appear here.`}</p></div>}
+     {hasMore && <button type="button" className="dl-button dl-load-more" disabled={loadingMore} onClick={() => void refetch(cursor, true)}>{loadingMore ? "Loading…" : query ? "Continue search" : "Load more conversations"}</button>}
+    </>}
+   </section>
+   {details && <section className="dl-detail" aria-label={composeId ? "Compose message" : "Conversation"}>
+    {composeId !== null ? <ComposeView key={`${composeId}:${composeSession}`} draftId={composeId === "new" ? null : composeId} onSent={() => setNotice("Message accepted for delivery. You can review it in All mail.")} onClose={() => { setComposeId(null); void refetch(undefined, false, true); }} /> :
+     <ThreadView key={selectedMessageId} messageId={selectedMessageId!} debug={debug} senderAddress={ui.senderAddress} onRead={markRead} onChanged={() => void refetch(undefined, false, true)} onBack={() => navigate(() => setSelectedMessageId(null))} />}
+   </section>}
+  </div>}
+  {snoozingThread && <Dialog title="Come back to this" onClose={() => setSnoozingThread(null)}><SnoozePicker debug={debug} onCancel={() => setSnoozingThread(null)} onConfirm={until => { const row = snoozingThread; setSnoozingThread(null); void actOnThread(row, { action: "status", status: "snoozed", snoozeUntil: until }); }} /></Dialog>}
+ </DaylightShell>;
 }
-
-function readComposeFromUrl(): string | null {
-	return new URLSearchParams(window.location.search).get("compose");
-}
-
-function writeUrl(status: TabId, messageId: string | null, composeId: string | null) {
-	const url = new URL(window.location.href);
-	if (status === "inbox") url.searchParams.delete("status");
-	else url.searchParams.set("status", status);
-	if (messageId) url.searchParams.set("message", messageId);
-	else url.searchParams.delete("message");
-	if (composeId) url.searchParams.set("compose", composeId);
-	else url.searchParams.delete("compose");
-	window.history.replaceState({}, "", url.toString());
-}
-
-function InboxPage() {
-	const [status, setStatus] = React.useState<TabId>(readStatusFromUrl);
-	const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(readMessageFromUrl);
-	const [composeId, setComposeId] = React.useState<string | null>(readComposeFromUrl);
-	const viewId = `${status}|${selectedMessageId ?? ""}|${composeId ?? ""}`;
-	const viewRef = React.useRef(viewId);
-	viewRef.current = viewId;
-	const [rows, setRows] = React.useState<ThreadSummary[]>([]);
-	const [drafts, setDrafts] = React.useState<DraftListItem[]>([]);
-	const [loading, setLoading] = React.useState(true);
-	const [error, setError] = React.useState<string | null>(null);
-	const [snoozingThread, setSnoozingThread] = React.useState<ThreadSummary | null>(null);
-	const [busyThreadIds, setBusyThreadIds] = React.useState<Set<string>>(new Set());
-	const debug = React.useMemo(readDebugFromUrl, []);
-	const pages = React.useRef(new PageSession<ThreadSummary>());
-	const pageGeneration = React.useRef(0);
-	const [cursor, setCursor] = React.useState<string | undefined>();
-	const [hasMore, setHasMore] = React.useState(false);
-	const [loadingMore, setLoadingMore] = React.useState(false);
-	const [indexing, setIndexing] = React.useState(false);
-
-	const refetch = React.useCallback(async (forStatus: StatusFilter, nextCursor?: string, append = false) => {
-		const generation = append ? pageGeneration.current : (pageGeneration.current = pages.current.reset());
-		if (append) setLoadingMore(true); else { setLoading(true); setRows([]); setHasMore(false); }
-		setError(null);
-		setIndexing(false);
-		try {
-			for (let attempt = 0; attempt < 20; attempt++) {
-				const res = await apiFetch(`${API}/threads/list`, {
-					method: "POST", headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ status: forStatus, limit: 25, cursor: nextCursor }),
-				});
-				const data = await parseApiResponse<{ items: ThreadSummary[]; cursor?: string; hasMore: boolean; indexing?: boolean }>(res, "Failed to load messages");
-				if (!pages.current.current(generation)) return;
-				setIndexing(Boolean(data.indexing));
-				if (data.indexing) {
-					if (attempt === 19) throw new Error("Mailbox indexing is still in progress. Use Refresh to continue.");
-					await new Promise(resolve => setTimeout(resolve, 350));
-					if (!pages.current.current(generation)) return;
-					continue;
-				}
-				const items = pages.current.accept(generation, data.items, append);
-				if (items) setRows(items);
-				setCursor(data.cursor); setHasMore(data.hasMore);
-				break;
-			}
-		} catch (err) {
-			if (pages.current.current(generation)) setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			if (pages.current.current(generation)) { setLoading(false); setLoadingMore(false); }
-		}
-	}, []);
-
-	const refetchDrafts = React.useCallback(async () => {
-		const generation = pageGeneration.current = pages.current.reset();
-		setLoading(true);
-		setError(null);
-		setIndexing(false);
-		try {
-			const res = await apiFetch(`${API}/messages/drafts`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: "{}",
-			});
-			const data = await parseApiResponse<{ items: DraftListItem[] }>(res, "Failed to load drafts");
-			if (pages.current.current(generation)) setDrafts(data.items);
-		} catch (err) {
-			if (pages.current.current(generation)) setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			if (pages.current.current(generation)) setLoading(false);
-		}
-	}, []);
-
-	React.useEffect(() => {
-		writeUrl(status, selectedMessageId, composeId);
-		if (!selectedMessageId && composeId === null && status !== "outbox") {
-			status === "drafts" ? void refetchDrafts() : void refetch(status);
-		}
-			return () => { pages.current.reset(); };
-	}, [status, selectedMessageId, composeId, refetch, refetchDrafts]);
-
-	const handleOpen = (openMessageId: string) => setSelectedMessageId(openMessageId);
-	const handleBack = () => setSelectedMessageId(null);
-
-	const actOnThread = async (summary: ThreadSummary, action: Record<string, unknown>) => {
-		if (busyThreadIds.has(summary.id)) return;
-		const actionView = viewRef.current;
-		setBusyThreadIds(s => new Set(s).add(summary.id));
-		setError(null);
-		try {
-			const res = await apiFetch(`${API}/threads/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId: summary.threadId, ...action }) });
-			await parseApiResponse(res, "Failed to update thread");
-			if (status !== "drafts" && status !== "outbox" && viewRef.current === actionView) await refetch(status);
-		} catch (err) { if (viewRef.current === actionView) setError(err instanceof Error ? err.message : String(err)); }
-		finally { setBusyThreadIds(s => { const next = new Set(s); next.delete(summary.id); return next; }); }
-	};
-	const handlePinToggle = (summary: ThreadSummary, pinned: boolean) => actOnThread(summary, { action: "pin", pinned });
-	const handleDone = (summary: ThreadSummary) => actOnThread(summary, { action: "status", status: "done" });
-	const handleSnoozeConfirm = async (snoozeUntil: string) => {
-		const summary = snoozingThread; setSnoozingThread(null);
-		if (summary) await actOnThread(summary, { action: "status", status: "snoozed", snoozeUntil });
-	};
-
-	if (composeId !== null) {
-		return (
-			<div className="space-y-6">
-				<ComposeView
-					key={composeId}
-					draftId={composeId === "new" ? null : composeId}
-					onClose={() => {
-						setComposeId(null);
-					}}
-				/>
-			</div>
-		);
-	}
-
-	if (selectedMessageId) {
-		return (
-			<div className="space-y-6">
-				<ThreadView messageId={selectedMessageId} debug={debug} onBack={handleBack} />
-			</div>
-		);
-	}
-
-	return (
-		<div className="space-y-6">
-			<div className="flex items-start justify-between">
-				<div>
-					<h1 className="text-3xl font-bold">Inbox</h1>
-					<p className="text-muted-foreground mt-1">
-						All messages that passed through this site.
-					</p>
-				</div>
-				<div className="flex gap-2">
-					<button
-						type="button"
-						className="text-sm px-4 py-2 rounded bg-primary text-primary-foreground hover:opacity-90"
-						onClick={() => setComposeId("new")}
-					>
-						✉ New email
-					</button>
-					<a
-						href="/_emdash/admin/plugins/emdash-inbox/settings"
-						className="text-sm px-3 py-2 rounded border hover:bg-muted"
-						title="Inbox Settings"
-					>
-						⚙ Settings
-					</a>
-				</div>
-			</div>
-
-			<div className="flex items-center justify-between gap-3">
-				<FilterTabs current={status} onChange={setStatus} />
-				{status !== "outbox" && <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={loading} onClick={() => status === "drafts" ? void refetchDrafts() : void refetch(status)}>Refresh</button>}
-			</div>
-
-			{status !== "outbox" && indexing && <p role="status" className="text-sm text-muted-foreground">Updating the mailbox index…</p>}
-			{status !== "outbox" && error && (
-				<div className="p-3 rounded-lg border border-destructive/50 bg-destructive/5 text-sm text-destructive">
-					{error}
-				</div>
-			)}
-
-			{status === "outbox" ? <OutboxView /> : status === "drafts" ? (
-				loading ? (
-					<SkeletonList />
-				) : drafts.length === 0 ? (
-					<div className="border border-dashed rounded-lg p-12 text-center text-sm text-muted-foreground">
-						No drafts. Start one with “New email”.
-					</div>
-				) : (
-					<div className="space-y-2">
-						{drafts.map((d) => (
-							<DraftCard key={d.id} draft={d} onOpen={(id) => setComposeId(id)} />
-						))}
-					</div>
-				)
-			) : loading ? (
-				<SkeletonList />
-			) : rows.length === 0 && !error && !indexing ? (
-				<EmptyState status={status} />
-			) : (
-				<div className="relative">
-					<DateBuckets
-						rows={rows}
-						field={status === "snoozed" ? "snoozeUntil" : "sortAt"}
-						direction={status === "snoozed" ? "future" : "past"}
-						renderRow={(row) => (
-							<ThreadCard
-								key={row.id}
-								row={row}
-								busy={busyThreadIds.has(row.id)}
-								onOpen={handleOpen}
-								onPinToggle={handlePinToggle}
-								onDone={handleDone}
-								onSnoozeRequest={(s) => setSnoozingThread(s)}
-							/>
-						)}
-					/>
-					{hasMore && <button type="button" disabled={loadingMore} className="mt-4 rounded border px-4 py-2 text-sm disabled:opacity-50" onClick={() => void refetch(status, cursor, true)}>{loadingMore ? "Loading…" : "Load more conversations"}</button>}
-					{snoozingThread && (
-						<SnoozePicker
-							debug={debug}
-							onConfirm={handleSnoozeConfirm}
-							onCancel={() => setSnoozingThread(null)}
-						/>
-					)}
-				</div>
-			)}
-		</div>
-	);
-}
-
-export const pages: PluginAdminExports["pages"] = {
-	"/": InboxPage,
-	"/settings": SettingsPage,
-};
+function InboxPage() { return <NavigationProvider><InboxWorkspace /></NavigationProvider>; }
+export const pages: PluginAdminExports["pages"] = { "/": InboxPage, "/settings": SettingsPage };

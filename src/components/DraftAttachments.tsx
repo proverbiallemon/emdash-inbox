@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Icon } from "../daylight/Icon";
 import type { PublicAttachment } from "../lib/attachments";
 import { formatAttachmentSize } from "../lib/attachmentClient";
 
@@ -12,14 +13,14 @@ interface Props {
 
 export function DraftAttachments({ attachments, disabled, uploading, onUpload, onRemove }: Props) {
 	const inputId = React.useId();
-	return <div className="space-y-2">
-		{attachments.length > 0 && <ul className="flex flex-wrap gap-2" aria-label="Attached files">
-			{attachments.map((file) => <li key={file.id} className="flex max-w-full items-center gap-2 rounded border px-2 py-1 text-xs">
-				<span className="truncate">{file.filename}</span><span className="whitespace-nowrap text-muted-foreground">{formatAttachmentSize(file.size)}</span>
-				<button type="button" disabled={disabled} aria-label={`Remove ${file.filename}`} className="text-muted-foreground hover:text-foreground disabled:opacity-50" onClick={() => onRemove(file.id)}>×</button>
+	return <div className="dl-draft-attachments">
+		{attachments.length > 0 && <ul className="dl-draft-files" aria-label="Attached files">
+			{attachments.map((file) => <li key={file.id} className="dl-file">
+				<Icon name="attachment" /><span className="dl-file-copy"><strong>{file.filename}</strong><small>{formatAttachmentSize(file.size)}</small></span>
+				<button type="button" disabled={disabled} aria-label={`Remove ${file.filename}`} className="dl-icon-button" onClick={() => onRemove(file.id)}>×</button>
 			</li>)}
 		</ul>}
-		<div className="flex flex-wrap items-center gap-2 text-xs">
+		<div className="dl-attach-control">
 			<label htmlFor={inputId} className="font-medium">Attach files</label>
 			<input id={inputId} type="file" multiple disabled={disabled} className="max-w-full text-xs disabled:opacity-50" onChange={(event) => {
 				const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = "";

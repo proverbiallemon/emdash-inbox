@@ -8,6 +8,9 @@ import { DeliveryNotice } from "./DeliveryNotice";
 import { TipTapEditor } from "./TipTapEditor";
 import { ComposeToolbar } from "./ComposeToolbar";
 import { DraftAttachments } from "./DraftAttachments";
+import { useLeaveGuard } from "../daylight/navigation";
+import { useConfirmation, leaveConfirmation } from "../daylight/useConfirmation";
+import { useEditorRevision } from "../daylight/useEditorRevision";
 
 export interface ReplyComposeDefaults {
 	to: string;
@@ -22,10 +25,11 @@ interface Props {
 	threadId: string | null;
 	onSent: () => void;
 	onDiscard: () => void;
+	onSaved?: () => void;
 }
 interface ReplySnapshot { to: string; cc: string; subject: string; html: string }
 
-export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard }: Props) {
+export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard, onSaved }: Props) {
 	const [to, setTo] = React.useState(defaults.to);
 	const [cc, setCc] = React.useState(defaults.cc ?? "");
 	const [subject, setSubject] = React.useState(defaults.subject);
@@ -35,6 +39,8 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 	const currentDraft = React.useRef<string | null>(null);
 	const { busy, error, setError, run, locked } = useComposeOperation();
 	const delivery = useDeliveryAttempt();
+	const confirmation = useConfirmation();
+	useEditorRevision(editor);
 	const disabled = busy !== null || delivery.status !== null;
 
 	const handleEditorReady = React.useCallback((ed: Editor) => {
@@ -80,6 +86,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 	};
 	const handleSaveDraft = () => run("save", async () => {
 		await persistCurrentDraft();
+		onSaved?.();
 		onDiscard(); // The saved reply, including its files, remains in Drafts.
 	});
 	const handleUpload = (files: File[]) => run("upload", () => uploadDraftFiles(files, {
@@ -91,28 +98,33 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 		await postInbox("attachments/remove", { draftId: currentDraft.current, attachmentId });
 		setAttachments((current) => current.filter((file) => file.id !== attachmentId));
 	});
-	const handleClose = () => {
-		if (locked.current) return;
-		if (delivery.isBlocked()) { onDiscard(); return; }
-		if (isDirty() && !window.confirm("Close without saving your changes?")) return;
-		onDiscard();
+	const canLeave = async () => {
+		if (locked.current || confirmation.pending.current) return false;
+		if (delivery.isBlocked() || !isDirty()) return true;
+		return await confirmation.confirm(leaveConfirmation) && !locked.current;
 	};
+	useLeaveGuard({ canLeave, canReplace: async () => !delivery.isBlocked() && await canLeave() && !delivery.isBlocked(), hasUnsaved: () => locked.current || (!delivery.isBlocked() && isDirty()) });
+	const handleClose = async () => { if (await canLeave()) onDiscard(); };
 	const handleDiscard = async () => {
 		if (locked.current || delivery.isBlocked()) return;
-		if ((isDirty() || currentDraft.current) && !window.confirm("Discard this reply?")) return;
+		if ((isDirty() || currentDraft.current) && !await confirmation.confirm({ title: "Discard this reply?", description: "This removes the reply and any saved draft attachments. The conversation will stay in your mailbox.", action: "Discard reply" })) return;
+		if (locked.current || delivery.isBlocked()) return;
 		await run("discard", async () => {
 			if (currentDraft.current) await postInbox("messages/draft-discard", { draftId: currentDraft.current });
 			onDiscard();
 		});
 	};
 	const onKeyDown = (event: React.KeyboardEvent) => {
+		if ((event.target as HTMLElement).closest("dialog")) return;
 		if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void handleSend(); }
 		else if (event.key === "Escape") { event.preventDefault(); handleClose(); }
 	};
 	const inputClass = "w-full text-sm border rounded px-2 py-1 disabled:opacity-50";
 	const buttonClass = "text-sm px-4 py-1.5 rounded border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed";
 
-	return <div className="border rounded-lg p-4 mt-4 space-y-3" onKeyDown={onKeyDown}>
+	return <div className="dl-composer dl-reply-composer" onKeyDown={onKeyDown}>
+		{confirmation.dialog}
+		<div className="dl-compose-status"><strong>{defaults.cc !== undefined ? "Reply all" : "Reply"}</strong><span role="status">{busy === "save" ? "Saving draft…" : isDirty() ? "Unsaved changes" : currentDraft.current ? "Draft saved" : "Write your reply"}</span></div>
 		{error && <div role="alert" className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>}
 		<DeliveryNotice status={delivery.status} attemptId={delivery.attemptId} busy={busy !== null} onCheck={() => void run("send", async () => { handleResult(await delivery.check()); })} />
 		<label className="block text-xs font-medium">To
@@ -127,7 +139,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard 
 		{editor && <fieldset disabled={disabled}><ComposeToolbar editor={editor} /></fieldset>}
 		<TipTapEditor initialContent={defaults.quoteHtml} onReady={handleEditorReady} />
 		<DraftAttachments attachments={attachments} disabled={disabled || !editor} uploading={busy === "upload"} onUpload={(files) => void handleUpload(files)} onRemove={(id) => void handleRemove(id)} />
-		<div className="flex flex-wrap gap-2 pt-2">
+		<div className="dl-compose-actions">
 			<button type="button" className="text-sm px-4 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed" disabled={disabled || !editor} onClick={() => void handleSend()}>{busy === "send" ? "Sending…" : "Send"}</button>
 			<button type="button" className={buttonClass} disabled={disabled || !editor} onClick={() => void handleSaveDraft()}>{busy === "save" ? "Saving…" : "Save draft"}</button>
 			<button type="button" className={buttonClass} disabled={disabled} onClick={() => void handleDiscard()}>Discard</button>

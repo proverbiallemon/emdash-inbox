@@ -37,15 +37,15 @@ export function DateBuckets<T extends Row>({
 	];
 
 	return (
-		<div className="space-y-4">
+		<div className="dl-buckets">
 			{sections
 				.filter((s) => s.rows.length > 0)
 				.map((s) => (
 					<div key={s.label}>
-						<div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">
+						<div className="dl-bucket-label">
 							{s.label}
 						</div>
-						<div className="space-y-2">{s.rows.map(renderRow)}</div>
+						<div className="dl-bucket-rows">{s.rows.map(renderRow)}</div>
 					</div>
 				))}
 		</div>

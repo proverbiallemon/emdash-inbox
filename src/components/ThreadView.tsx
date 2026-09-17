@@ -7,6 +7,8 @@ import { SnoozePicker } from "./SnoozePicker";
 import { ReplyCompose, type ReplyComposeDefaults } from "./ReplyCompose";
 import { replyDefaults } from "../lib/replyDefaults";
 import { deriveReplyAll } from "../lib/recipients";
+import { Dialog } from "../daylight/Dialog";
+import { useMailNavigation } from "../daylight/navigation";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -30,20 +32,28 @@ interface Props {
 	messageId: string;
 	debug: boolean;
 	onBack: () => void;
+	onRead?: (threadId: string) => void;
+	onChanged?: () => void;
+	senderAddress?: string;
 }
 
-export function ThreadView({ messageId, debug, onBack }: Props) {
+export function ThreadView({ messageId, debug, onBack, onRead, onChanged, senderAddress }: Props) {
+	const allow = useMailNavigation("replace");
 	const [thread, setThread] = React.useState<Row[]>([]);
 	const [loading, setLoading] = React.useState(true);
 	const [error, setError] = React.useState<string | null>(null);
 	const [revealedImages, setRevealedImages] = React.useState<Set<string>>(new Set());
 	const [snoozingOpen, setSnoozingOpen] = React.useState(false);
+	const [historyOpen, setHistoryOpen] = React.useState(false);
 	// Gate concurrent bulk calls so a second action can't clobber the first's
 	// optimistic state or failure-revert. Action buttons disable while busy.
 	const [busy, setBusy] = React.useState(false);
 	// null = closed; "reply" prefills to the latest message's sender only;
 	// "reply-all" additionally prefills cc via deriveReplyAll.
 	const [replyMode, setReplyMode] = React.useState<"reply" | "reply-all" | null>(null);
+	const [notice, setNotice] = React.useState<string | null>(null);
+	const onReadRef = React.useRef(onRead);
+	onReadRef.current = onRead;
 
 	const loadThread = React.useCallback(async (refresh = false) => {
 		// Keep an open reply (including its delivery lock) mounted while
@@ -61,6 +71,8 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 				"Failed to load thread",
 			);
 			setThread(data.items);
+			if (!refresh) setHistoryOpen(data.items.slice(0, -1).some(message => message.id === messageId));
+			if (data.items[0]) onReadRef.current?.(data.items[0].data.threadId ?? data.items[0].data.messageId);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
@@ -80,17 +92,20 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 			const res = await apiFetch(`${API}/threads/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId, ...action }) });
 			await parseApiResponse(res, "Failed to update thread");
 			await loadThread(true);
+			onChanged?.();
 		} catch (err) { setError(err instanceof Error ? err.message : String(err)); }
 		finally { setBusy(false); }
 	};
 	const handlePin = (pinned: boolean) => actOnThread({ action: "pin", pinned });
 	const handleStatus = (status: "inbox" | "done") => actOnThread({ action: "status", status });
 
-	const handleReply = () => setReplyMode("reply");
-	const handleReplyAll = () => setReplyMode("reply-all");
+	const handleReply = async () => { if (replyMode !== "reply" && await allow()) setReplyMode("reply"); };
+	const handleReplyAll = async () => { if (replyMode !== "reply-all" && await allow()) setReplyMode("reply-all"); };
 	const handleReplySent = async () => {
 		setReplyMode(null);
+		setNotice("Reply accepted for delivery.");
 		await loadThread();
+		onChanged?.();
 	};
 	const handleReplyDiscard = () => setReplyMode(null);
 
@@ -154,7 +169,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 	// plain Reply button. Sender address for the "minus my address" filter is
 	// approximated from any outbound row's `from` in this thread.
 	const buildReplyAllDefaults = (): ReplyComposeDefaults => {
-		const senderAddress = thread.find((r) => r.data.direction === "outbound")?.data.from ?? "";
+		const ownAddress = senderAddress || thread.find((r) => r.data.direction === "outbound")?.data.from || "";
 		const all = deriveReplyAll(
 			{
 				direction: anchor.data.direction,
@@ -163,7 +178,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 				toAll: anchor.data.toAll,
 				cc: anchor.data.cc,
 			},
-			senderAddress,
+			ownAddress,
 		);
 		const base = buildReplyDefaults();
 		return { to: all.to.join(", "), cc: all.cc.join(", "), subject: base.subject, quoteHtml: base.quoteHtml };
@@ -175,6 +190,7 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 				← Inbox
 			</button>
 			{error && <div role="alert" className="p-3 rounded-lg border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>}
+			{notice && <p role="status" className="dl-notice">{notice}</p>}
 			<ThreadHeader subject={subject} participants={participants} messageCount={thread.length}>
 				<ThreadActions
 					thread={thread}
@@ -187,7 +203,8 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 				/>
 			</ThreadHeader>
 			<div className="relative">
-				{thread.map((m) => (
+				{thread.length > 1 && <details className="dl-history" open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}><summary>{thread.length - 1} earlier {thread.length === 2 ? "message" : "messages"} · Show conversation</summary><div className="dl-history-content">{thread.slice(0, -1).map(m => <ThreadMessage key={m.id} row={m} showImages={revealedImages.has(m.id)} onRevealImages={() => setRevealedImages(current => new Set(current).add(m.id))} />)}</div></details>}
+				{thread.slice(-1).map((m) => (
 					<ThreadMessage
 						key={m.id}
 						row={m}
@@ -202,20 +219,24 @@ export function ThreadView({ messageId, debug, onBack }: Props) {
 					/>
 				))}
 				{replyMode !== null && thread.length > 0 && (
-					<ReplyCompose
+						<ReplyCompose
+						key={replyMode}
 						defaults={replyMode === "reply-all" ? buildReplyAllDefaults() : buildReplyDefaults()}
 						inReplyTo={thread[thread.length - 1].data.messageId}
 						threadId={thread[0].data.threadId}
 						onSent={handleReplySent}
 						onDiscard={handleReplyDiscard}
+						onSaved={() => setNotice("Reply saved in Drafts.")}
 					/>
 				)}
 				{snoozingOpen && (
+					<Dialog title="Come back to this" onClose={() => setSnoozingOpen(false)}>
 					<SnoozePicker
 						debug={debug}
 						onConfirm={handleSnoozeConfirm}
 						onCancel={() => setSnoozingOpen(false)}
 					/>
+					</Dialog>
 				)}
 			</div>
 		</div>

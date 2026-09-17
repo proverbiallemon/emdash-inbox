@@ -2,59 +2,28 @@ import * as React from "react";
 import { ThreadMessageBody } from "./ThreadMessageBody";
 import { AttachmentDownloads } from "./AttachmentDownloads";
 import type { PublicAttachment } from "../lib/attachments";
-
-type Direction = "inbound" | "outbound";
-
 export interface ThreadMessageRow {
-	id: string;
-	data: {
-		direction: Direction;
-		from: string;
-		to: string;
-		subject: string;
-		bodyText: string;
-		bodyHtml: string | null;
-		receivedAt: string;
-		attachments?: PublicAttachment[];
-	};
+ id: string;
+ data: {
+  direction: "inbound" | "outbound"; from: string; to: string; toAll?: string[]; cc?: string[];
+  subject: string; bodyText: string; bodyHtml: string | null; receivedAt: string; attachments?: PublicAttachment[];
+ };
 }
-
-interface Props {
-	row: ThreadMessageRow;
-	showImages: boolean;
-	onRevealImages: () => void;
-}
-
-function formatFull(iso: string): string {
-	const d = new Date(iso);
-	return d.toLocaleString(undefined, {
-		weekday: "short",
-		month: "short",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-	});
-}
-
-export function ThreadMessage({ row, showImages, onRevealImages }: Props) {
-	const m = row.data;
-	const counterparty = m.direction === "inbound" ? m.from : `→ ${m.to}`;
-
-	return (
-		<div className="border-b last:border-0 py-4">
-			<div className="mb-2 flex items-baseline justify-between gap-4 text-sm">
-				<span className="font-semibold">{counterparty}</span>
-				<span className="text-xs text-muted-foreground whitespace-nowrap">
-					{formatFull(m.receivedAt)}
-				</span>
-			</div>
-			<ThreadMessageBody
-				bodyHtml={m.bodyHtml}
-				bodyText={m.bodyText}
-				showImages={showImages}
-				onRevealImages={onRevealImages}
-			/>
-			<AttachmentDownloads messageId={row.id} attachments={m.attachments ?? []} />
-		</div>
-	);
+export function ThreadMessage({ row, showImages, onRevealImages }: { row: ThreadMessageRow; showImages: boolean; onRevealImages: () => void }) {
+ const m = row.data;
+ const sender = m.direction === "outbound" ? "You" : m.from;
+ const time = new Date(m.receivedAt);
+ return <article className="dl-message">
+  <div className="dl-message-heading">
+   <span className="dl-avatar" aria-hidden="true">{sender.slice(0, 2).toUpperCase()}</span>
+   <div className="dl-message-sender"><strong>{sender}</strong>
+    <details className="dl-message-details"><summary>to {m.toAll?.length ? m.toAll.join(", ") : m.to}</summary>
+     <dl><dt>From</dt><dd>{m.from}</dd><dt>To</dt><dd>{m.toAll?.length ? m.toAll.join(", ") : m.to}</dd>{!!m.cc?.length && <><dt>Cc</dt><dd>{m.cc.join(", ")}</dd></>}<dt>Sent</dt><dd>{time.toLocaleString()}</dd></dl>
+    </details>
+   </div>
+   <time dateTime={m.receivedAt}>{time.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
+  </div>
+  <ThreadMessageBody bodyHtml={m.bodyHtml} bodyText={m.bodyText} showImages={showImages} onRevealImages={onRevealImages} />
+  <AttachmentDownloads messageId={row.id} attachments={m.attachments ?? []} />
+ </article>;
 }

@@ -10,6 +10,9 @@ import { postInbox, uploadDraftFiles } from "../lib/attachmentClient";
 import { useComposeOperation } from "../lib/useComposeOperation";
 import { useDeliveryAttempt, type SendResult } from "../lib/useDeliveryAttempt";
 import { DeliveryNotice } from "./DeliveryNotice";
+import { useLeaveGuard } from "../daylight/navigation";
+import { useConfirmation, leaveConfirmation } from "../daylight/useConfirmation";
+import { useEditorRevision } from "../daylight/useEditorRevision";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -29,6 +32,7 @@ interface Props {
 	/** null = fresh compose; string = resume this draft. */
 	draftId: string | null;
 	onClose: () => void;
+	onSent?: () => void;
 }
 
 interface ComposeSnapshot {
@@ -39,7 +43,7 @@ interface ComposeSnapshot {
 	editorHTML: string;
 }
 
-export function ComposeView({ draftId, onClose }: Props) {
+export function ComposeView({ draftId, onClose, onSent }: Props) {
 	const [to, setTo] = React.useState("");
 	const [cc, setCc] = React.useState("");
 	const [bcc, setBcc] = React.useState("");
@@ -52,6 +56,8 @@ export function ComposeView({ draftId, onClose }: Props) {
 	const [editor, setEditor] = React.useState<Editor | null>(null);
 	const { busy, error, setError, run, locked } = useComposeOperation();
 	const delivery = useDeliveryAttempt();
+	const confirmation = useConfirmation();
+	useEditorRevision(editor);
 	// Fields as of the last successful save; null until something has been
 	// saved (fresh compose) or set from the loaded draft (resumed compose).
 	// Used to decide whether closing needs a confirmation.
@@ -93,6 +99,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 
 	const handleEditorReady = React.useCallback((ed: Editor) => {
 		setEditor(ed);
+		setSavedSnapshot(current => current ? { ...current, editorHTML: ed.getHTML() } : current);
 		ed.commands.focus("start");
 	}, []);
 
@@ -105,6 +112,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 			setError(result.error ?? "Delivery was rejected. Your email remains editable as a draft.");
 			return;
 		}
+		onSent?.();
 		onClose();
 	};
 
@@ -148,24 +156,25 @@ export function ComposeView({ draftId, onClose }: Props) {
 
 	// "← Inbox" and Escape: never deletes a saved draft. Only asks for
 	// confirmation when there's something that hasn't been saved yet.
-	const handleClose = () => {
-		if (locked.current) return;
-		if (delivery.isBlocked()) { onClose(); return; }
-		if (savedSnapshot) {
-			const current: ComposeSnapshot = { to, cc, bcc, subject, editorHTML: editor ? editor.getHTML() : "" };
-			const changed = (Object.keys(current) as (keyof ComposeSnapshot)[]).some((key) => current[key] !== savedSnapshot[key]);
-			if (changed && !window.confirm("Close without saving your changes?")) return;
-		} else if (hasAnyContent() && !window.confirm("Close without saving your changes?")) {
-			return;
-		}
-		onClose();
+	const isDirty = () => {
+		if (!savedSnapshot) return hasAnyContent();
+		const current = { to, cc, bcc, subject, editorHTML: editor?.getHTML() ?? "" };
+		return (Object.keys(current) as (keyof ComposeSnapshot)[]).some(key => current[key] !== savedSnapshot[key]);
 	};
+	const canLeave = async () => {
+		if (locked.current || confirmation.pending.current) return false;
+		if (delivery.isBlocked() || !isDirty()) return true;
+		return await confirmation.confirm(leaveConfirmation) && !locked.current;
+	};
+	useLeaveGuard({ canLeave, hasUnsaved: () => locked.current || (!delivery.isBlocked() && isDirty()) });
+	const handleClose = async () => { if (await canLeave()) onClose(); };
 
 	// Discard button: deletes the persisted draft (if any) after confirming,
 	// since this is the explicit "throw this away" action.
 	const handleDiscard = async () => {
 		if (locked.current || delivery.isBlocked() || (draftId !== null && initialHtml === null)) return;
-		if ((hasAnyContent() || currentDraftId) && !window.confirm("Discard this email?")) return;
+		if ((hasAnyContent() || currentDraftId) && !await confirmation.confirm({ title: "Discard this email?", description: "This removes the email and any saved draft attachments. This cannot be undone.", action: "Discard email" })) return;
+		if (locked.current || delivery.isBlocked()) return;
 		await run("discard", async () => {
 			if (currentDraft.current) await postInbox("messages/draft-discard", { draftId: currentDraft.current });
 			onClose();
@@ -173,6 +182,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 	};
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
+		if ((e.target as HTMLElement).closest("dialog")) return;
 		if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
 			e.preventDefault();
 			void handleSend();
@@ -186,11 +196,15 @@ export function ComposeView({ draftId, onClose }: Props) {
 	const disabled = busy !== null || delivery.status !== null || (draftId !== null && initialHtml === null);
 
 	return (
-		<div className="space-y-4" onKeyDown={onKeyDown}>
+		<div className="dl-composer" onKeyDown={onKeyDown}>
+			{confirmation.dialog}
+			<div className="dl-compose-heading">
+			<h1>{draftId ? "Edit draft" : "New message"}</h1>
 			<button type="button" disabled={busy !== null} className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50" onClick={handleClose}>
 				← Inbox
 			</button>
-			<h1 className="text-3xl font-bold">{draftId ? "Edit draft" : "New email"}</h1>
+			</div>
+			<p className="dl-muted" role="status">{busy === "save" ? "Saving draft…" : isDirty() ? "Unsaved changes" : currentDraftId ? "Draft saved" : "A fresh message"}</p>
 			{error && (
 				<div role="alert" className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>
 			)}
@@ -223,7 +237,7 @@ export function ComposeView({ draftId, onClose }: Props) {
 			{editor && <fieldset disabled={disabled}><ComposeToolbar editor={editor} /></fieldset>}
 			{initialHtml !== null && <TipTapEditor initialContent={initialHtml} onReady={handleEditorReady} />}
 			<DraftAttachments attachments={attachments} disabled={disabled || !editor} uploading={busy === "upload"} onUpload={(files) => void handleUpload(files)} onRemove={(id) => void handleRemove(id)} />
-			<div className="flex gap-2 pt-2">
+			<div className="dl-compose-actions">
 				<button type="button" className="text-sm px-4 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed" disabled={disabled || !editor} onClick={() => void handleSend()}>
 					{busy === "send" ? "Sending…" : "Send"}
 				</button>

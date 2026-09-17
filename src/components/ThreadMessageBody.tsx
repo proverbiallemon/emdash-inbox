@@ -16,9 +16,9 @@ export function ThreadMessageBody({ bodyHtml, bodyText, showImages, onRevealImag
 		const imagesHidden = !showImages && hasExternalImages;
 
 		return (
-			<div className="prose prose-sm max-w-none">
+			<div className="dl-message-html">
 				{imagesHidden && (
-					<div className="mb-2 flex items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+					<div className="dl-image-notice">
 						<span>External images hidden.</span>
 						<button
 							type="button"
@@ -35,6 +35,6 @@ export function ThreadMessageBody({ bodyHtml, bodyText, showImages, onRevealImag
 	}
 
 	return (
-		<pre className="text-sm whitespace-pre-wrap font-sans">{bodyText}</pre>
+		<div className="dl-message-html"><pre>{bodyText}</pre></div>
 	);
 }

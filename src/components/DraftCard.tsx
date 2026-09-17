@@ -26,7 +26,7 @@ export function DraftCard({ draft, onOpen }: Props) {
 		<button
 			type="button"
 			onClick={() => onOpen(draft.id)}
-			className="w-full text-left border rounded-lg p-4 hover:bg-muted/50 transition-colors"
+			className="dl-draft-card"
 		>
 			<div className="flex items-baseline justify-between gap-4">
 				<span className="text-sm font-medium truncate">{recipients}</span>

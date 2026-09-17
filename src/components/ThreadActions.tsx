@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Icon } from "../daylight/Icon";
 
 type Status = "inbox" | "snoozed" | "done" | "archived";
 
@@ -28,7 +29,7 @@ export function ThreadActions({ thread, busy, onReply, onReplyAll, onPin, onStat
 		"text-xs px-3 py-1 border rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed";
 
 	return (
-		<div className="flex gap-2 pt-3">
+		<div className="dl-thread-actions">
 			<button
 				type="button"
 				className={btnClass}
@@ -51,7 +52,7 @@ export function ThreadActions({ thread, busy, onReply, onReplyAll, onPin, onStat
 				disabled={busy}
 				onClick={() => onPin(!allPinned)}
 			>
-				{allPinned ? "📌 Unpin thread" : "📌 Pin thread"}
+				<Icon name="pin" />{allPinned ? "Unpin thread" : "Pin thread"}
 			</button>
 			<button
 				type="button"
@@ -67,7 +68,7 @@ export function ThreadActions({ thread, busy, onReply, onReplyAll, onPin, onStat
 				disabled={busy}
 				onClick={onSnooze}
 			>
-				⏰ Snooze thread
+				<Icon name="snooze" />Snooze thread
 			</button>
 		</div>
 	);

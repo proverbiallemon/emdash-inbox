@@ -11,9 +11,9 @@ export function ThreadHeader({ subject, participants, messageCount, children }: 
 	const displaySubject = subject || "(no subject)";
 
 	return (
-		<div className="border-b pb-3 mb-2">
-			<h1 className="text-2xl font-bold">{displaySubject}</h1>
-			<div className="text-sm text-muted-foreground mt-1">
+		<div className="dl-thread-header">
+			<h1 className="dl-thread-title">{displaySubject}</h1>
+			<div className="dl-muted">
 				{participants.slice(0, 3).join(", ")}
 				{participants.length > 3 ? ` +${participants.length - 3} more` : ""}
 				{" · "}
