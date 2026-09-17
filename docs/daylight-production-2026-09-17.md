@@ -4,13 +4,14 @@ Daylight is deployed at `https://pbweb.me/_emdash/admin/plugins/emdash-inbox` on
 
 ## Reproducible artifact
 
-- Archive: `emdash-inbox-0.10.0-daylight-5a1bc055de.tgz`
-- SHA-256: `5a1bc055de44fc062ef3b8660903ab49d023dccee43227b9320a60a38e41af8a`
-- Final Worker version: `cd1db83f-a9a3-4d19-8921-ef5989fb3fb2`
-- Deployment message: `Inbox: Daylight with protected dashboard navigation`
+- Archive: `emdash-inbox-0.10.0-daylight-c611de8a76.tgz`
+- SHA-256: `c611de8a76807688d26b1048d8ebe0e899ceb1ec7a732b821936ebdefe6619db`
+- Final Worker version: `0e15d23c-71c9-49e8-8e3a-98dce130c30d`
+- Deployment message: `Inbox: Daylight confirmations and accessibility polish`
+- Previous Daylight version before polish: `cd1db83f-a9a3-4d19-8921-ef5989fb3fb2`
 - Previous production version before Daylight: `198e1ab4-63db-4702-9720-5b1e0eaf6a2f`
-- Published client asset: `/_astro/PluginRegistry.CbOH5DP5.js`
-- Installed `dist/admin.mjs` SHA-256: `560745e72b9dd3ad8ce71f792f70a198ceafcef0776eb50ef7322a44663cf331`
+- Published client asset: `/_astro/PluginRegistry.DeHH7mNA.js`
+- Installed `dist/admin.mjs` SHA-256: `63f53892597cb37969b6c7580ad1a2a636a52ad74ef1f235cf0e0bf7a362d58f`
 - Installed `dist/index.mjs` SHA-256: `402bb902b5c92092b0c30da991a5959460c9a0b31c61c49104b723d9ec214cd2`
 
 The host was built and deployed from an isolated copy of the existing PBWeb checkout. All 38 source/public files were verified unchanged against the original checkout and previous deployment source. Only Inbox's dependency entry and resolved package changed. The exact archive, package metadata, lockfile, and installed dependency were synchronized back to the original host checkout. Existing bindings, variables, and cron were preserved; no schema migration or email-routing change was required.
@@ -18,7 +19,7 @@ The host was built and deployed from an isolated copy of the existing PBWeb chec
 ## Validation
 
 - Node 24.19.0; plugin TypeScript passed.
-- Full suite: **454 tests in 36 files passed**.
+- Full suite: **466 tests in 37 files passed**.
 - Native validation built both exports and verified **20 MCP tools / 2 admin pages**.
 - Original host integration typecheck: 30 files, no errors, warnings, or hints.
 - Host build and initial Wrangler dry-run passed. Final host build and deployment also passed. The existing large-client-chunk advisory remains.
@@ -27,7 +28,7 @@ The host was built and deployed from an isolated copy of the existing PBWeb chec
 
 ## Live acceptance
 
-The existing normal passkey-authenticated production session was used.
+The existing normal passkey-authenticated production session was used. The final polish passed a separate code review; all findings were resolved before merge.
 
 - Real inbox and conversation views rendered in the EmDash host.
 - Expanded mode filled the available browser viewport; returning to embedded dashboard view preserved the editor.
@@ -37,12 +38,12 @@ The existing normal passkey-authenticated production session was used.
 - The deployed Inbox Settings page rendered its configured sender and inbound-secret controls without changing configuration.
 - Initial live testing found that EmDash's sidebar could bypass the plugin's unsaved-change guard. Link interception now runs at document capture before the host router. A failing regression reproduced the issue; the fixed regression verifies blocked navigation preserves the editor and allowed navigation reaches the host. Separate checks cover downloads, new tabs, and local anchors.
 
-## Acceptance limits
+## Final confirmation checks and acceptance limits
 
-- The browser automation interface did not reliably expose native JavaScript confirmation dialogs. Live navigation reached the dashboard, but cancellation was not reliably observable; cancellation behavior is verified by the regression suite. Do not count this as a completed manual native-dialog cancellation check.
-- Temporary draft cleanup is pending confirmation of the browser's native discard dialog. The temporary draft is `Daylight host verification 20260917`; its saved draft ID is `b639aaa7-94e5-4e7c-a88e-e20582b4aaa0`. No other draft is part of cleanup.
+- Native popups were replaced by Daylight confirmation and link dialogs. The final live test cancelled dashboard navigation and verified exact unsaved text remained, then accepted navigation and reached Dashboard. A separate live discard cancellation retained the saved draft; explicit acceptance removed the temporary `Daylight host verification 20260917` draft (`b639aaa7-94e5-4e7c-a88e-e20582b4aaa0`). No other draft was removed.
 - Real touch-device, browser zoom, and assistive-technology acceptance remain.
 - No real send or new MCP authorization was performed for this visual rollout. Existing delivery and attachment behavior is covered by the full integration suite and prior production smoke tests.
-- An isolated local host was prepared, but automatic approval review rejected its development authentication shortcut. No bypass was used. Local build checks and normal production authentication supplied the acceptance evidence.
+
+See the [accessibility and interaction review](daylight-accessibility-2026-09-17.md) for final contrast ratios, keyboard wrapping, mobile measurements, fresh-compose reset, and historical search coverage.
 
 Bundles/highlights, reminders, labels, bulk triage, undo, scheduled sending, signatures, templates, forwarding, and PDF visual previews remain future work in the design specification.

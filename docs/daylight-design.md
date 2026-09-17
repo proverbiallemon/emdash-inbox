@@ -57,7 +57,7 @@ Checks on September 16, 2026:
 - Browser checks covered Top inbox, Left navigation, expanded mode while editing, desktop thread, 390px inbox/thread/reply/composer, untouched reply closing, draft saving, and text attachment preview. These are local fixture checks, not live mailbox acceptance.
 - No production deployment, live mail send, or new MCP consent occurred.
 
-September 17 follow-up: deployed the real host integration, added a regression for EmDash sidebar navigation, and reran the full suite on Node 24.19.0: **454 tests across 36 files passed**. TypeScript, native validation, and the host build passed. See the rollout report for live acceptance and limitations.
+September 17 follow-up: deployed the real host integration, added a regression for EmDash sidebar navigation, and reran the full suite on Node 24.19.0: **466 tests across 37 files passed**. TypeScript, native validation, and the host build passed. See the rollout report for live acceptance and limitations.
 
 ## Assets and provenance
 
