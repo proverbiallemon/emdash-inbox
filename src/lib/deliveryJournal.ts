@@ -1,3 +1,4 @@
+import { beginThreadMutation, endThreadMutation, finishMessageAdmission } from "./threadMutation";
 import type { MessageDoc } from "../index";
 import { prepareMessage } from "./mailboxStore";
 import { normalizeMessageId } from "./messageIdentity";
@@ -144,6 +145,21 @@ function comparableSnapshot(message: MessageDoc): unknown {
 
 /** CAS projection used by the host callback. Repeated recovery preserves user triage. */
 export async function projectDeliveryMessage(ctx: any, attempt: DeliveryAttempt, sentMessage: MessageDoc): Promise<{ id: string; threadId: string }> {
+ const existing = await ctx.storage.messages.get(attempt.messageId);
+ const identity = receiptId(attempt);
+ const destination = existing?.deliveryProjected ? (existing.threadId === existing.messageId ? identity : existing.threadId ?? identity) : sentMessage.threadId ?? identity;
+ const guard = await beginThreadMutation(ctx, [existing?.threadId ?? existing?.messageId ?? identity, destination]);
+ try {
+  const result = await projectDeliveryWithinGuard(ctx, attempt, sentMessage, new Set(guard.intents.map(intent=>intent.threadId)));
+  await finishMessageAdmission(ctx, attempt.messageId);
+  await endThreadMutation(ctx, guard);
+  return result;
+ } catch(error) {
+  if(error instanceof DeliveryError) await endThreadMutation(ctx,guard);
+  throw error;
+ }
+}
+async function projectDeliveryWithinGuard(ctx: any, attempt: DeliveryAttempt, sentMessage: MessageDoc, guardedThreads: Set<string>): Promise<{ id: string; threadId: string }> {
 	for (let i = 0; i < RETRIES; i++) {
 		const current = await ctx.storage.messages.getVersioned(attempt.messageId);
 		// Read the journal AFTER the row revision. A stale projector cannot
@@ -164,7 +180,8 @@ export async function projectDeliveryMessage(ctx: any, attempt: DeliveryAttempt,
 			deliveryAttemptId: attempt.attemptId, deliveryFingerprint: attempt.fingerprint,
 			deliveryCreatedAt: attempt.createdAt, deliveryProjected: true, indexDirty: true,
 		};
-		if ((await ctx.storage.messages.compareAndSet(attempt.messageId, current.revision, prepareMessage(attempt.messageId, next, message))).applied) return { id: attempt.messageId, threadId: next.threadId ?? identity };
+		if (!guardedThreads.has(message.threadId ?? message.messageId) || !guardedThreads.has(next.threadId ?? identity)) throw new DeliveryError("Delivery conversation changed; reconcile again");
+        if ((await ctx.storage.messages.compareAndSet(attempt.messageId, current.revision, prepareMessage(attempt.messageId, {...next, publicationPending: !message.admittedAt}, message))).applied) return { id: attempt.messageId, threadId: next.threadId ?? identity };
 	}
 	throw new DeliveryError("Delivery message changed repeatedly; reconcile again");
 }

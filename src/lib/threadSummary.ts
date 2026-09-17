@@ -8,6 +8,7 @@ export type StatusFilter = "inbox" | "snoozed" | "done" | "all";
 export type MessageView = Omit<MessageDoc, "bodyRaw" | "rawObjectKey" | "attachments"> & { attachments?: PublicAttachment[] };
 
 export interface ThreadSummary {
+	bundleSender?: string | null;
 	bundle?: BundleAssignment;
 	id: string;
 	threadId: string;

@@ -1,3 +1,4 @@
+import { beginThreadMutation, endThreadMutation } from "./threadMutation";
 import { PluginRouteError } from "emdash";
 import type { MessageDoc } from "../index";
 import { BUNDLE_IDS, canonicalSender, builtinAssignment, NO_BUNDLE, isBundleId, validEnabledBundles, type BundleId, type BundleAssignment, type BundleEvidence, type BundleOverride, type BundleRule } from "./bundles";
@@ -29,6 +30,7 @@ export interface BundleMoveInput {
     bundle: BundleId | null;
     saveSenderRule?: boolean;
     replaceRule?: boolean;
+    expectedSender?: string;
 }
 export interface BundleMoveResult {
     assignment: BundleAssignment;
@@ -108,7 +110,7 @@ export async function listBundleRules(ctx: any) {
     return { rules: (await allRows<BundleRule>(ctx.storage.bundleRules)).map(row => row.data).sort((a, b) => a.sender.localeCompare(b.sender)), explanation: "Conversation override, then the exact sender rule saved when incoming mail arrived, then built-in matching. Outgoing replies do not change grouping. Sender rules apply to future mail; uncertain mail stays in Conversations." };
 }
 export async function moveBundleThread(ctx: any, input: BundleMoveInput): Promise<BundleMoveResult> {
-    objectInput(input, ["threadId", "bundle", "saveSenderRule", "replaceRule"]);
+    objectInput(input, ["threadId", "bundle", "saveSenderRule", "replaceRule", "expectedSender"]);
     if (typeof input.threadId !== "string" || !input.threadId || input.threadId.length > 1000)
         throw PluginRouteError.badRequest("threadId is required");
     destination(input.bundle);
@@ -117,11 +119,15 @@ export async function moveBundleThread(ctx: any, input: BundleMoveInput): Promis
             throw PluginRouteError.badRequest(`${key} must be boolean`);
     if (input.replaceRule && !input.saveSenderRule)
         throw PluginRouteError.badRequest("Replacement requires saving a sender rule");
+    if (input.expectedSender !== undefined && (!input.saveSenderRule || typeof input.expectedSender !== "string" || canonicalSender(input.expectedSender) !== input.expectedSender))
+        throw PluginRouteError.badRequest("expectedSender must be a canonical sender for a saved rule");
     const snapshot = await readBundleThreadSnapshot(ctx, input.threadId);
     if (!snapshot)
         throw PluginRouteError.notFound("Conversation not found");
     // Derive this from actual newest incoming mail, not caller input or the latest outgoing reply.
     const sender = snapshot.incoming ? canonicalSender(snapshot.incoming.value.from) : null;
+    if (input.expectedSender !== undefined && input.expectedSender !== sender)
+        throw PluginRouteError.conflict("The latest incoming sender changed; review the sender before saving a rule");
     let ruleSnapshot: any = null;
     if (input.saveSenderRule) {
         if (!sender)
@@ -132,9 +138,13 @@ export async function moveBundleThread(ctx: any, input: BundleMoveInput): Promis
     }
     const assignment: BundleAssignment = { bundle: input.bundle, source: "manual" };
     const override: BundleOverride = { version: 1, threadId: input.threadId, bundle: input.bundle, dirty: true };
+    const guard = await beginThreadMutation(ctx, [input.threadId]);
     const moved = await ctx.storage.bundleOverrides.compareAndSet(input.threadId, snapshot.override?.revision ?? null, override);
-    if (!moved.applied)
+    if (!moved.applied) {
+        await endThreadMutation(ctx, guard);
         throw PluginRouteError.conflict("Conversation assignment changed; reload and retry");
+    }
+    await endThreadMutation(ctx, guard);
     // The dirty override is durable before publication. A repair failure must not turn a committed move into a false failure.
     try {
         await refreshThread(ctx, input.threadId);

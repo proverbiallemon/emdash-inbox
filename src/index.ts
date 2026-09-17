@@ -1,3 +1,5 @@
+import { bundleOperationCollections, bundleOperationRoutes } from "./lib/bundleOperations";
+import { threadMutationCollections, finishMessageAdmission } from "./lib/threadMutation";
 import { bundleCollections, bundleRoutes } from "./lib/bundleStore";
 import { definePlugin, PluginRouteError } from "emdash";
 import type { PluginDescriptor } from "emdash";
@@ -77,6 +79,9 @@ export type MessageDirection = "inbound" | "outbound";
 export type MessageStatus = "inbox" | "snoozed" | "done" | "archived" | "draft" | "outbox";
 
 export interface MessageDoc {
+	admittedAt?: string;
+	publicationPending?: boolean;
+	bulkReceipt?: { operationId: string; candidateId: string };
 	bundleEvidence?: import("./lib/bundles").BundleEvidence;
 	deliveryAttemptId?: string;
 	deliveryFingerprint?: string;
@@ -229,7 +234,10 @@ async function persistInbound(
 
 	// Replay-safe ingestion: do not write a second copy or attachment set.
 	const duplicate = await ctx.storage.messages.query({ where: { messageId }, limit: 1 });
-	if (duplicate.items?.[0]) return { msgId: duplicate.items[0].id, from: fromAddr };
+	if (duplicate.items?.[0]) {
+		await finishMessageAdmission(ctx, duplicate.items[0].id);
+		return { msgId: duplicate.items[0].id, from: fromAddr };
+	}
 
 	// Derive threadId from headers. postal-mime types `inReplyTo` as a single
 	// Message-ID string and `references` as a space-separated string (per
@@ -296,7 +304,7 @@ async function persistInbound(
 		snoozeUntil: null,
 		inReplyTo: derived.inReplyTo,
 	};
-	await putMessage(ctx, msgId, msg);
+	await putMessage(ctx, msgId, msg, { liveInbound: true });
 
 	const contactId = fromAddr.trim().toLowerCase();
 	const existing = (await ctx.storage.contacts.get(contactId)) as
@@ -511,6 +519,8 @@ export function createPlugin() {
 		storage: {
 			...mailboxCollections,
 			...bundleCollections,
+			...bundleOperationCollections,
+			...threadMutationCollections,
 			...attachmentCollections,
 			...deliveryCollections,
 			messages: {
@@ -585,6 +595,7 @@ export function createPlugin() {
 		routes: {
 			...native.routes,
 			...bundleRoutes,
+			...bundleOperationRoutes,
 			"ui/preferences": { permission: "plugins:manage", handler: readInboxPreferences },
 			"ui/preferences-save": { permission: "plugins:manage", handler: saveInboxPreferences },
 			"messages/search": {

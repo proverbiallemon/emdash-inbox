@@ -1,4 +1,5 @@
-import { messageAssignment, bundleClassificationFailed, isBundleId, NO_BUNDLE, type BundleAssignment, type BundleOverride } from "./bundles";
+import { canonicalSender, messageAssignment, bundleClassificationFailed, isBundleId, NO_BUNDLE, type BundleAssignment, type BundleOverride } from "./bundles";
+import { beginThreadMutation, endThreadMutation, finishMessageAdmission, MutationRejected } from "./threadMutation";
 import { captureBundleEvidence } from "./bundleStore";
 import type { StorageCollection } from "emdash";
 import type { MessageDoc } from "../index";
@@ -36,7 +37,7 @@ export async function loadThreadRows(ctx: any, threadId: string): Promise<Messag
 	return rows.filter((row) => !isDraftRow(row)).sort(chronological);
 }
 
-export const mailboxMessageIndexes = ["indexDirty", "messageKey"];
+export const mailboxMessageIndexes = ["indexDirty", "messageKey", "admittedAt"];
 export const mailboxCollections = {
 	threads: { indexes: ["status", "listKey", "snoozeKey", ["status", "listKey"], ["status", "snoozeKey"], "bundlePresentation", "hasUnread", ["bundlePresentation", "listKey"], ["bundlePresentation", "hasUnread"], ["status", "hasUnread"]] },
 	searchDocuments: { indexes: ["messageKey"] },
@@ -55,6 +56,8 @@ interface IndexedMessage extends MessageDoc {
 	indexSchemaVersion?: number;
 }
 export interface ThreadIndex {
+	admissionComplete: boolean;
+	maxAdmittedAt: string | null;
 	bundle: BundleAssignment;
 	bundlePresentation: "conversations" | "excluded" | import("./bundles").BundleId;
 	hasUnread: boolean;
@@ -103,7 +106,7 @@ export function prepareMessage(id: string, message: IndexedMessage, previous?: I
 	const oldThreads = new Set(previous?.indexPreviousThreadIds ?? message.indexPreviousThreadIds ?? []);
 	if (previous && messageThread(previous) !== messageThread(message)) oldThreads.add(messageThread(previous));
 	return {
-		...message, threadId: messageThread(message),
+		...message, admittedAt: previous?.admittedAt ?? message.admittedAt, bulkReceipt: previous?.bulkReceipt ?? message.bulkReceipt, threadId: messageThread(message),
 		sortAt: message.sortAt ?? message.receivedAt,
 		snoozeUntil: message.snoozeUntil ?? null,
 		read: typeof message.read === "boolean" ? message.read : true,
@@ -116,14 +119,43 @@ export function prepareMessage(id: string, message: IndexedMessage, previous?: I
 }
 
 /** Real messages are never deleted; the dirty marker commits with their data. */
-export async function putMessage(ctx: any, id: string, message: MessageDoc): Promise<void> {
-	if ((message.status === "draft" || message.status === "outbox")) throw new Error("Drafts must use draft storage operations");
-	const result = await ctx.storage.messages.compareAndSet(id, null, prepareMessage(id, { ...message, bundleEvidence: await captureBundleEvidence(ctx, message) }));
-	if (!result.applied) throw new Error("Message already exists");
+export async function putMessage(ctx: any, id: string, message: MessageDoc, options: { liveInbound?: boolean } = {}): Promise<void> {
+ if (message.status === "draft" || message.status === "outbox") throw new Error("Drafts must use draft storage operations");
+ const threadId = messageThread(message);
+ const guard = await beginThreadMutation(ctx, [threadId]);
+ const prior = guard.heads.get(threadId);
+ const receivedAt = options.liveInbound && message.direction === "inbound"
+  ? new Date(Math.max(Date.now(), prior ? Date.parse(prior.receivedAt) + 1 : 0)).toISOString() : message.receivedAt;
+ const next = prepareMessage(id, { ...message, receivedAt, ...(options.liveInbound ? {sortAt: receivedAt} : {}), publicationPending: true, admittedAt: undefined, bundleEvidence: await captureBundleEvidence(ctx, message) });
+ try {
+  const result = await ctx.storage.messages.compareAndSet(id, null, next);
+  if (!result.applied) throw new Error("Message already exists");
+ } catch(error) {
+  const saved = await ctx.storage.messages.get(id);
+  if (!saved || saved.messageId !== next.messageId || !saved.publicationPending) throw error;
+ }
+ await finishMessageAdmission(ctx, id);
+ await endThreadMutation(ctx, guard);
 }
 
 /** Merge against a fresh SQL revision so unrelated concurrent changes survive. */
 export async function mutateMessage(ctx: any, id: string, patch: MessagePatch): Promise<MessageDoc | null> {
+ const row = await ctx.storage.messages.get(id);
+ if (!row || row.status === "draft" || row.status === "outbox") return null;
+ const resolved = row.indexSchemaVersion === INDEX_VERSION ? row : {...row,...await legacyThread(ctx,row)};
+ const proposed = patch(resolved);
+ if (proposed === null) return null;
+ const guard = await beginThreadMutation(ctx, [messageThread(row), messageThread(resolved), messageThread({...resolved,...proposed})]);
+ try {
+  const result = await mutateMessageWithinGuard(ctx,id,patch,new Set(guard.intents.map(intent=>intent.threadId)));
+  await endThreadMutation(ctx, guard);
+  return result;
+ } catch(error) {
+  if(error instanceof MutationRejected) await endThreadMutation(ctx,guard);
+  throw error;
+ }
+}
+async function mutateMessageWithinGuard(ctx: any, id: string, patch: MessagePatch, guardedThreads: Set<string>): Promise<MessageDoc | null> {
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
 		const snapshot = await ctx.storage.messages.getVersioned(id);
 		if (!snapshot || (snapshot.value.status === "draft" || snapshot.value.status === "outbox")) return null;
@@ -135,19 +167,27 @@ export async function mutateMessage(ctx: any, id: string, patch: MessagePatch): 
 		const changes = patch(current);
 		if (changes === null) return null;
 		const next = prepareMessage(id, { ...current, ...changes }, snapshot.value);
-		if ((next.status === "draft" || next.status === "outbox")) throw new Error("Thread operations cannot turn a message into a draft");
+        if (!guardedThreads.has(messageThread(current)) || !guardedThreads.has(messageThread(next))) throw new MutationRejected("Message moved to another conversation; retry mutation");
+		if ((next.status === "draft" || next.status === "outbox")) throw new MutationRejected("Thread operations cannot turn a message into a draft");
 		const result = await ctx.storage.messages.compareAndSet(id, snapshot.revision, next);
 		if (result.applied) return next;
 	}
-	throw new Error("Message changed repeatedly; retry the operation");
+	throw new MutationRejected("Message changed repeatedly; retry the operation");
 }
 
 export async function mutateThread(ctx: any, threadId: string, patch: MessagePatch): Promise<{ updated: number }> {
-	const rows = await loadThreadRows(ctx, threadId);
+	const guard = await beginThreadMutation(ctx, [threadId]);
 	let updated = 0;
+    try {
+	const rows = await loadThreadRows(ctx, threadId);
 	for (const row of rows) {
-		if (await mutateMessage(ctx, row.id, (message) => messageThread(message) === threadId ? patch(message) : null)) updated++;
+		if (await mutateMessageWithinGuard(ctx, row.id, (message) => messageThread(message) === threadId ? patch(message) : null, new Set([threadId]))) updated++;
 	}
+    } catch(error) {
+        if(error instanceof MutationRejected) await endThreadMutation(ctx,guard);
+        throw error;
+    }
+	await endThreadMutation(ctx, guard);
 	return { updated };
 }
 
@@ -216,6 +256,8 @@ export async function makeThreadIndex(ctx: any, threadId: string): Promise<Threa
 	let latestIncoming: (Head & { sender: string }) | null = null;
 	let relevant: (Head & { assignment: BundleAssignment }) | null = null;
 	let previous: Head | null = null;
+	let admissionComplete = true;
+	let maxAdmittedAt: string | null = null;
 	let pinned = false;
 	let messageCount = 0;
 	let unreadCount = 0;
@@ -226,6 +268,8 @@ export async function makeThreadIndex(ctx: any, threadId: string): Promise<Threa
 		for (const { id, data } of page.items as MessageRow[]) {
 			if ((data.status === "draft" || data.status === "outbox")) continue;
 			messageCount++;
+			if (!data.admittedAt) admissionComplete = false;
+			else if (!maxAdmittedAt || data.admittedAt > maxAdmittedAt) maxAdmittedAt = data.admittedAt;
 			if (data.read === false) unreadCount++;
 			pinned ||= data.pinned;
 			const head: Head = { id, data: { receivedAt: data.receivedAt, status: data.status, sortAt: data.sortAt, snoozeUntil: data.snoozeUntil } };
@@ -259,7 +303,7 @@ export async function makeThreadIndex(ctx: any, threadId: string): Promise<Threa
 	const descendingTime = (8640000000000000n - BigInt(new Date(iso(sortAt)).getTime())).toString().padStart(17, "0");
 	const participants = [...participantsByAddress.values()].sort(chronological).map(({ data }) => ({ direction: data.direction, from: data.from }));
 	return {
-		bundle, bundlePresentation, hasUnread: unreadCount > 0, latestIncomingId:latestIncoming?.id ?? null, latestIncomingSender:latestIncoming?.sender ?? null,
+		admissionComplete, maxAdmittedAt, bundle, bundlePresentation, hasUnread: unreadCount > 0, latestIncomingId:latestIncoming?.id ?? null, latestIncomingSender:latestIncoming?.sender ?? null,
 		schemaVersion: INDEX_VERSION, threadId, latestId: latest.id,
 		previousId: previous?.id ?? null,
 		status: latest.data.status, pinned, sortAt, snoozeUntil,
@@ -385,7 +429,7 @@ export async function threadSummaries(ctx: any, rows: MessageRow<ThreadIndex>[])
 			latest: mailboxPublicMessage(latest), previous: previous ? mailboxPublicMessage(previous) : null,
 			messageCount: data.messageCount, unreadCount: data.unreadCount,
 			participants: deriveParticipantChips(data.participants as MessageDoc[], senderAddress),
-			bundle: data.bundle, pinned: data.pinned, sortAt: data.sortAt, snoozeUntil: data.snoozeUntil,
+			bundleSender: data.latestIncomingSender ? canonicalSender(data.latestIncomingSender) : null, bundle: data.bundle, pinned: data.pinned, sortAt: data.sortAt, snoozeUntil: data.snoozeUntil,
 		};
 	});
 }
