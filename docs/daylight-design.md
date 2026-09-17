@@ -12,7 +12,8 @@ Status: core mail UI deployed on PBWeb from `codex/daylight-mail-ui` on Septembe
 
 | Surface | Figma node(s) | Implementation | Verification | Remaining gap |
 | --- | --- | --- | --- | --- |
-| Main inbox, Top navigation | 30:412 | Daylight shell, greeting, dates, unread states, functional folder shortcuts | Local desktop browser inspection; existing mailbox tests | Bundles/highlights are future. Shortcuts currently open Pinned, Snoozed, and Drafts. |
+| Main inbox, Top navigation | 30:412 | Daylight shell, greeting, dates, unread states, functional folder shortcuts | Local desktop browser inspection; existing mailbox tests | Highlights remain future. Bundles are a separate local addition below. Shortcuts open Pinned, Snoozed, and Drafts. |
+| M9.1 bundles | Page 100:411 | Grouped Inbox, manual correction, exact-sender rules, settings, durable completion and results; mobile bottom navigation | 541 automated tests, typecheck/native validation, Top/Left and 390/320px browser checks; see the bundle specification | Not deployed; physical assistive-technology acceptance remains |
 | Left navigation / appearance | 37:1539 | Account-scoped Top/Left preference; responsive fallback | Live preference persisted across dashboard return; layout switch retained unsaved draft text; isolation and failed-save tests | Real touch-device acceptance |
 | Expanded Inbox | Inbox layout states | Stable portal host fills the browser viewport; dashboard return link; restores background state on exit | Live expanded/embedded round trip; draft DOM identity, modal reopening, inert/scroll restoration tests | Small-screen browser chrome acceptance |
 | Read thread / history | 68:412, 74:2519, 76:959 | Desktop split pane, narrow thread page, recipient details, collapsed earlier messages, pin/done/snooze | Desktop and 390px container inspection; existing thread-action tests | No new threading semantics |
@@ -22,7 +23,7 @@ Status: core mail UI deployed on PBWeb from `codex/daylight-mail-ui` on Septembe
 | Send and recovery states | 79:1031, 79:1067, 79:1083, 86:1437 | Accepted-for-delivery notice, durable Outbox status, blocked pending/uncertain sends, retry/recovery semantics preserved | Delivery suite; new pending/uncertain reply-mode lock regressions | No real email sent during this UI work |
 | Mobile inbox / navigation | 36:1461 | Drawer navigation, wrapping actions, narrow composer, 44px core action targets | 390px container browser inspection | Real touch device, browser zoom, and assistive-technology acceptance |
 | Search and Pinned | Inbox controls | Global subject/body search with resumable scan; indexed pinned-only pagination | Empty search scan, stale response, cursor isolation, 115-thread SQLite fixture | Search is substring matching, not full-text ranking or advanced filters |
-| Future mail tools | Figma future-tool states | Retained in design only | Design review only | Bundles, reminders, bulk triage, labels, undo, scheduled sending and writing tools need separately scoped functionality |
+| Future mail tools | Figma future-tool states | Retained in design only | Design review only | Highlights, reminders, labels, undo, scheduled sending and writing tools need separately scoped functionality |
 
 ## Implementation details
 
@@ -47,7 +48,7 @@ pnpm test
 pnpm validate
 ```
 
-The preview uses the actual admin components with a development-only API adapter. All mail, recipients, attachments, send results, and account settings in it are synthetic and held in memory; refreshing resets them. The adapter makes no network requests. It is not included in the published package files.
+The preview uses the actual admin components with a development-only API adapter. All mail, recipients, attachments, send results, and account settings are synthetic. Bundle-operation and correction state can persist in browser storage for reload-recovery checks; **Reset sample mail** restores the fixture. The adapter makes no network requests. It is not included in the published package files.
 
 Checks on September 16, 2026:
 - TypeScript passed.
@@ -74,8 +75,12 @@ Six icons are exact SVG exports from the approved Figma design, embedded in `src
 
 Export URL form: `https://www.figma.com/api/mcp/asset/<asset-id>.svg`.
 
+M9.1 adds the exact Figma chevron export `10571f81-0530-4c57-aa60-8e570374c68b`, embedded in the bundle styles and rotated for expanded groups.
+
 Manrope is the Google Fonts variable font from [google/fonts](https://github.com/google/fonts/tree/main/ofl/manrope), converted from TTF to WOFF2 without changing glyphs. The embedded WOFF2 is 53,876 bytes. Its SIL Open Font License and copyright are in `src/daylight/Manrope-OFL.txt`.
 
 ## Next slice
 
-Review the deployed UI and complete real touch-device and assistive-technology acceptance. Then take on bundles/highlights as a separate backend and UI feature; keep future controls in the Figma specification until their behavior exists. PBWeb's checkout now pins the exact deployed archive; its unrelated source and public files were preserved.
+M9.1 is implemented and locally tested: see the [bundle specification and verification](m9-bundles-design.md). The Figma page and implementation cover grouping, corrections, completion and recovery in Top, Left and mobile layouts.
+
+After the bundle release, take on highlights as a separate backend and UI slice; reminders and content linking remain later work. Complete real touch-device and assistive-technology acceptance. Keep future controls in Figma until their behavior exists. PBWeb's checkout still pins the deployed Daylight baseline archive.

@@ -38,7 +38,7 @@ describe("durable delivery journal with native SQLite CAS", () => {
 		host = await createNativeHost();
 		deliveries = new PluginStorageRepository(host.db, host.plugin.id, "deliveries", ["state", "messageId"]);
 		const messages = new PluginStorageRepository(host.db, host.plugin.id, "messages", [...host.plugin.storage.messages.indexes, "deliveryAttemptId"]);
-		ctx = { storage: { messages, deliveries }, kv: new OptionsRepository(host.db) };
+		ctx = { storage: { ...Object.fromEntries(Object.entries(host.plugin.storage).map(([name, config]: any) => [name, new PluginStorageRepository(host.db, host.plugin.id, name, config.indexes)])), messages, deliveries }, kv: new OptionsRepository(host.db) };
 		transport = vi.fn().mockResolvedValue({ messageId: "<accepted@provider.example>" });
 	});
 	afterEach(async () => { vi.restoreAllMocks(); await host?.close(); });

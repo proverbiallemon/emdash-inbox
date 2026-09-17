@@ -103,6 +103,7 @@ export function SettingsPage() {
 					Delivery and inbound configuration for emdash-inbox.
 				</p>
 			</div>
+			<p><a href="/_emdash/admin/plugins/emdash-inbox?settings=bundles">Manage bundles in Inbox</a> — grouping and layout preferences for your account.</p>
 			{error && (
 				<div className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">
 					{error}

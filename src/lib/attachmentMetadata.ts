@@ -16,12 +16,13 @@ export function publicAttachment(attachment: StoredAttachment): PublicAttachment
 	return { id, filename, mimeType, size, sha256, disposition, ...(contentId ? { contentId } : {}) };
 }
 
-type InternalMessageFields = "deliveryProjected" | "deliveryAttemptId" | "deliveryFingerprint" | "deliveryCreatedAt" | "bodyRaw" | "rawObjectKey" | "objectKey" | "attachments" | "indexDirty" | "indexPreviousThreadIds" | "indexSchemaVersion" | "messageKey";
+type InternalMessageFields = "admittedAt" | "publicationPending" | "bulkReceipt" | "bundleEvidence" | "deliveryProjected" | "deliveryAttemptId" | "deliveryFingerprint" | "deliveryCreatedAt" | "bodyRaw" | "rawObjectKey" | "objectKey" | "attachments" | "indexDirty" | "indexPreviousThreadIds" | "indexSchemaVersion" | "messageKey";
 export function publicMessage<T extends object>(doc: T): Omit<T, InternalMessageFields> & { attachments?: PublicAttachment[] } {
 	const {
+		admittedAt: _admittedAt, publicationPending: _publicationPending, bulkReceipt: _bulkReceipt,
 		deliveryProjected: _projected, deliveryAttemptId: _attempt, deliveryFingerprint: _fingerprint, deliveryCreatedAt: _deliveryCreatedAt,
 		bodyRaw: _raw, rawObjectKey: _rawKey, objectKey: _key, attachments,
-		indexDirty: _dirty, indexPreviousThreadIds: _previous, indexSchemaVersion: _schema, messageKey: _messageKey,
+		bundleEvidence: _bundleEvidence, indexDirty: _dirty, indexPreviousThreadIds: _previous, indexSchemaVersion: _schema, messageKey: _messageKey,
 		...rest
 	} = doc as T & Record<InternalMessageFields, unknown> & { attachments?: StoredAttachment[] };
 	return { ...rest, ...(attachments ? { attachments: attachments.map(publicAttachment) } : {}) };
