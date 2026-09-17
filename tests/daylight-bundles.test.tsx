@@ -99,3 +99,55 @@ it('shows existing action failures in the grouped Inbox',async()=>{
  vi.stubGlobal('fetch',async(url:string)=>url.endsWith('ui/preferences')?response({preferences:{navigation:'top',fullWindow:false,enabledBundles:[...BUNDLE_IDS],bundledInbox:true},userId:'user',canSave:true}):url.endsWith('threads/action')?new Response(JSON.stringify({error:{message:'Unable to update conversation'}}),{status:503}):response(url.endsWith('overview')?{totalCount:1,unreadCount:1,bundles:[]}:{items:[item],hasMore:false}));
  await act(()=>root.render(React.createElement(pages['/'] as React.ComponentType)));await act(()=>container.querySelector<HTMLButtonElement>('[title="Mark done"]')!.click());expect(container.querySelector('[role="alert"]')?.textContent).toContain('Unable to update conversation');
 });
+it('recovers from a sender-rule conflict by submitting the chosen destination for this conversation only',async()=>{
+ const writes:any[]=[];const close=vi.fn();
+ vi.stubGlobal('fetch',async(_url:string,init:RequestInit)=>{
+  writes.push(JSON.parse(init.body as string));
+  return writes.length===1?new Response(JSON.stringify({error:{message:'A rule already exists for this sender; explicitly replace it to continue'}}),{status:409}):response({moved:true});
+ });
+ await act(()=>root.render(<BundleMoveDialog row={row} onClose={close} onChanged={()=>{}} onRefresh={()=>{}}/>));
+ await act(()=>button('Shipping').click());await act(()=>container.querySelector<HTMLInputElement>('[name="future"]')!.click());await act(()=>button('Move conversation').click());
+ expect(button('Move conversation').disabled).toBe(true);
+ await act(()=>container.querySelector<HTMLInputElement>('[name="future"]')!.click());
+ expect(button('Shipping').getAttribute('aria-pressed')).toBe('true');expect(button('Move conversation').disabled).toBe(false);expect(container.querySelector('[role="alert"]')).toBeNull();
+ await act(()=>button('Move conversation').click());
+ expect(writes[1]).toEqual({threadId:'one',bundle:'shipping'});expect(close).toHaveBeenCalledTimes(1);
+});
+it('refreshes terminal operation summaries after status changes, reading and correction',async()=>{
+ const {pages}=await import('../src/admin');window.history.replaceState({},'','/?status=done&operation=operation-results');
+ const date='2026-09-17T10:00:00Z';let folder='inbox';let read=false;let assignment='orders';let resultReads=0;
+ const summary=():any=>({...row,bundle:{bundle:assignment,source:'manual'},latest:{messageId:'one',threadId:'one',subject:'Affected conversation',from:'reader@example.com',to:'owner@example.com',direction:'inbound',status:folder,bodyText:'Fixture body',bodyHtml:null,receivedAt:date,sortAt:date,snoozeUntil:null,read,pinned:false},previous:null,participants:[],messageCount:1,unreadCount:read?0:1,pinned:false,sortAt:date,snoozeUntil:null});
+ vi.stubGlobal('requestAnimationFrame',(callback:FrameRequestCallback)=>{callback(0);return 0;});
+ vi.stubGlobal('fetch',async(url:string,init:RequestInit)=>{
+  const body=JSON.parse(init.body as string);
+  if(url.endsWith('ui/preferences'))return response({preferences:{navigation:'top',fullWindow:false,enabledBundles:[...BUNDLE_IDS],bundledInbox:true},userId:'user',canSave:true});
+  if(url.endsWith('bundles/done-threads')){resultReads++;return response({items:[{threadId:'one',openMessageId:'one',outcome:'done',summary:summary()}],hasMore:false});}
+  if(url.endsWith('threads/action')){folder=body.status;return response({updated:1});}
+  if(url.endsWith('messages/thread')){read=true;return response({items:[{id:'one',data:summary().latest}]});}
+  if(url.endsWith('bundles/move')){assignment=body.bundle;return response({moved:true});}
+  return response({items:[],hasMore:false});
+ });
+ await act(()=>root.render(React.createElement(pages['/'] as React.ComponentType)));
+ const results=()=>container.querySelector('.dl-bundle-results')!;
+ expect(results().textContent).toContain('Marked done · Currently inbox');expect(results().querySelector('.dl-thread-card')?.getAttribute('data-read')).toBe('false');
+ await act(()=>results().querySelector<HTMLButtonElement>('[title="Mark done"]')!.click());
+ expect(results().textContent).toContain('Marked done · Currently done');
+ await act(()=>results().querySelector<HTMLButtonElement>('[aria-label="Open Affected conversation"]')!.click());
+ await act(()=>[...container.querySelectorAll<HTMLButtonElement>('.dl-detail button')].find(b=>b.textContent?.includes('← Inbox'))!.click());
+ expect(results().querySelector('.dl-thread-card')?.getAttribute('data-read')).toBe('true');expect(results().textContent).toContain('Marked done');
+ const beforeCorrection=resultReads;
+ await act(()=>results().querySelector<HTMLButtonElement>('[title="Move conversation"]')!.click());await act(()=>button('Shipping').click());await act(()=>button('Move conversation').click());
+ expect(resultReads).toBeGreaterThan(beforeCorrection);
+ await act(()=>results().querySelector<HTMLButtonElement>('[title="Move conversation"]')!.click());expect(container.querySelector('dialog')?.textContent).toContain('Currently in Shipping');
+ window.history.replaceState({},'','/');
+});
+it('invalidates pending operation-result pagination when refreshed summaries arrive',async()=>{
+ const {BundleResults}=await import('../src/daylight/BundleResults');let finish!:(value:Response)=>void;let refreshed=false;
+ const result=(id:string,status:string)=>({threadId:id,openMessageId:id,outcome:'done',summary:{...row,id,threadId:id,latest:{...row.latest,status}}});
+ vi.stubGlobal('fetch',async(_url:string,init:RequestInit)=>{const body=JSON.parse(init.body as string);if(body.cursor)return new Promise<Response>(r=>finish=r);return response({items:[result('first',refreshed?'snoozed':'done')],hasMore:!refreshed,...(!refreshed?{cursor:'next-page'}:{})});});
+ const view=(refreshKey:number)=><BundleResults operationId="operation-results" refreshKey={refreshKey} renderRow={summary=><p key={summary.id}>{summary.id}</p>} onBack={()=>{}}/>;
+ await act(()=>root.render(view(0)));await act(()=>button('Load more results').click());refreshed=true;await act(()=>root.render(view(1)));
+ expect(container.textContent).toContain('Currently snoozed');
+ await act(()=>finish(response({items:[result('obsolete','done')],hasMore:true,cursor:'stale-page'})));
+ expect(container.textContent).not.toContain('obsolete');expect(container.textContent).not.toContain('Load more results');expect(container.textContent).toContain('Marked done · Currently snoozed');
+});

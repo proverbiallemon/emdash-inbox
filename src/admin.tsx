@@ -61,7 +61,7 @@ function InboxWorkspace() {
  const [indexing, setIndexing] = React.useState(false);
  const pages = React.useRef(new PageSession<ThreadSummary>());
  const viewRef = React.useRef("");
- viewRef.current = `${status}|${query}`;
+ viewRef.current = `${status}|${query}|${operationId ?? ""}`;
  const allow = useMailNavigation();
  const ui = useInboxPreferences();
  const useBundles = !ui.loading && status === "inbox" && !query && Array.isArray(ui.preferences.enabledBundles);
@@ -69,6 +69,7 @@ function InboxWorkspace() {
 
  const refetch = React.useCallback(async (nextCursor?: string, append = false, quiet = false) => {
   if (ui.loading) return;
+  if (operationId) { setLoading(false); setError(null); setBundleRefresh(value => value + 1); return; }
   if (useBundles) { setLoading(false); setBundleRefresh(value => value + 1); return; }
   if (status === "outbox") { setLoading(false); return; }
   const generation = append ? pageGeneration.current : (pageGeneration.current = pages.current.reset());
@@ -104,7 +105,7 @@ function InboxWorkspace() {
    }
   } catch (caught) { if (pages.current.current(generation)) setError(caught instanceof Error ? caught.message : String(caught)); }
   finally { if (pages.current.current(generation)) { setLoading(false); setLoadingMore(false); } }
- }, [status, query, useBundles, ui.loading]);
+ }, [status, query, useBundles, ui.loading, operationId]);
  const pageGeneration = React.useRef(0);
  React.useEffect(() => { void refetch(); return () => { pages.current.reset(); }; }, [refetch]);
  React.useEffect(() => { writeUrl(status, selectedMessageId, composeId, query, operationId); }, [status, selectedMessageId, composeId, query, operationId]);
@@ -144,7 +145,7 @@ function InboxWorkspace() {
 
  return <DaylightShell ui={ui} status={status} onStatus={changeStatus} query={query} onSearch={search} onCompose={() => openCompose()} onManageBundles={() => void navigate(() => setManageBundles(true))}>
   <div className="dl-page-heading"><div><h1>{title}</h1><p>{summary}</p></div><button type="button" className="dl-button dl-primary" onClick={() => openCompose()}>+ New message</button></div>
-  {useBundles && error && <p role="alert">{error}</p>}
+  {(useBundles || operationId) && error && <p role="alert">{error}</p>}
   {notice && <div className="dl-notice" role="status">{notice} <button type="button" className="dl-button dl-subtle" aria-label="Dismiss notification" onClick={() => setNotice(null)}>×</button></div>}
   {!details && !query && status === "inbox" && <div className="dl-shortcuts">
    <button type="button" className="dl-shortcut" onClick={() => changeStatus("pinned")}><span className="dl-eyebrow">KEEP CLOSE</span><strong>Pinned mail</strong><small>The mail you want within reach →</small></button>
@@ -153,7 +154,7 @@ function InboxWorkspace() {
   </div>}
   {status === "outbox" && !details ? <div className="dl-outbox"><OutboxView /></div> : <div className="dl-content" data-detail={details}>
    <section className="dl-list-column" aria-label={query ? "Matching messages" : "Conversations"}>
-    {operationId ? <BundleResults operationId={operationId} renderRow={threadCard} onBack={() => void changeStatus("inbox")} /> : useBundles ? <BundleInbox userId={ui.userId} enabled={ui.preferences.enabledBundles} defaultGrouped={ui.preferences.bundledInbox} refreshKey={bundleRefresh} expansion={expandedBundles} onExpansion={setExpandedBundles} renderRow={threadCard} onManage={() => void navigate(() => setManageBundles(true))} onResults={id => void navigate(() => {setOperationId(id); setStatus("done"); setSelectedMessageId(null); setComposeId(null);})} /> : <>
+    {operationId ? <BundleResults operationId={operationId} refreshKey={bundleRefresh} renderRow={threadCard} onBack={() => void changeStatus("inbox")} /> : useBundles ? <BundleInbox userId={ui.userId} enabled={ui.preferences.enabledBundles} defaultGrouped={ui.preferences.bundledInbox} refreshKey={bundleRefresh} expansion={expandedBundles} onExpansion={setExpandedBundles} renderRow={threadCard} onManage={() => void navigate(() => setManageBundles(true))} onResults={id => void navigate(() => {setOperationId(id); setStatus("done"); setSelectedMessageId(null); setComposeId(null);})} /> : <>
     <div className="dl-list-toolbar"><span>{loading ? "Loading your mail…" : status === "drafts" ? `${drafts.length} drafts` : `${rows.length}${hasMore ? "+" : ""} ${query ? "matching messages" : "conversations"}`}</span><button type="button" className="dl-button dl-subtle" disabled={loading || loadingMore} onClick={() => void refetch()}>Refresh</button></div>
     {indexing && <p role="status" className="dl-muted">Updating the mailbox index…</p>}
     {error && <p role="alert">{error}</p>}
