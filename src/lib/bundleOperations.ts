@@ -7,6 +7,7 @@ const BATCH = 25;
 const ADMISSION_MIGRATION = "state:bundle-admission:v1";
 export const bundleOperationCollections = {
     bundleOperations: { indexes: ["userId"] },
+    bundlePreparationPages: { indexes: ["operationId"] },
     bundleCandidates: { indexes: ["operationId", ["operationId", "outcome"], ["operationId", "unread"]] },
 };
 type Phase = "preparing" | "ready" | "running" | "complete";
@@ -36,6 +37,57 @@ interface Candidate {
     unread: boolean;
     outcome: Outcome;
     reason?: string;
+}
+interface PreparationPage {
+    version: 1;
+    operationId: string;
+    sourceCursor: string | null;
+    candidates: {
+        id: string;
+        data: Candidate;
+    }[];
+    hasMore: boolean;
+    cursor?: string;
+}
+/** A single immutable winner seals each bounded page BEFORE any candidates are published. */
+async function preparationPage(ctx: any, op: Operation): Promise<PreparationPage> {
+    const pageId = await key(op.id, op.cursor ?? "");
+    const stored = await ctx.storage.bundlePreparationPages.get(pageId) as PreparationPage | null;
+    if (stored)
+        return stored;
+    // Fixed indexed admission predicate bounds the tail; host created-at/id order never changes.
+    const source = await ctx.storage.messages.query({ where: { admittedAt: { lt: op.cutoff } }, limit: BATCH, cursor: op.cursor });
+    const candidates = new Map<string, Candidate>();
+    for (const row of source.items) {
+        if (row.data.status === "draft" || row.data.status === "outbox")
+            continue;
+        const threadId = row.data.threadId ?? row.data.messageId;
+        const candidateId = await key(op.id, threadId);
+        if (candidates.has(candidateId) || await ctx.storage.bundleCandidates.get(candidateId))
+            continue;
+        const state = await snapshotThread(ctx, threadId);
+        if (!state || !isEligibleBundleThread(state.projection, op.bundle))
+            continue;
+        const reason = state.active ? "mutation_unresolved" : !state.projection.admissionComplete ? "admission_unresolved" : !state.projection.maxAdmittedAt || state.projection.maxAdmittedAt >= op.cutoff! ? "new_mail" : undefined;
+        candidates.set(candidateId, { version: 1, operationId: op.id, threadId, latestId: state.projection.latestId, latestRevision: state.latest.revision, incomingId: state.projection.latestIncomingId, overrideRevision: state.override?.revision ?? null, assignment: JSON.stringify(state.projection.bundle), unread: state.projection.hasUnread, outcome: reason ? "skipped" : "pending", ...(reason ? { reason } : {}) });
+    }
+    if (source.hasMore && (!source.cursor || source.cursor === op.cursor))
+        throw Error("Bundle snapshot cursor did not advance");
+    const page: PreparationPage = { version: 1, operationId: op.id, sourceCursor: op.cursor ?? null, candidates: [...candidates].map(([id, data]) => ({ id, data })), hasMore: source.hasMore, cursor: source.hasMore ? source.cursor : undefined };
+    try {
+        await ctx.storage.bundlePreparationPages.compareAndSet(pageId, null, page);
+    }
+    catch (error) {
+        // Reconcile the same deterministic page after an unknown acknowledgement.
+        if (!await ctx.storage.bundlePreparationPages.get(pageId))
+            throw error;
+    }
+    // A competing preparer may have sealed another scope, including an empty page.
+    // Never publish this worker's local candidates unless they are the durable winner.
+    const sealed = await ctx.storage.bundlePreparationPages.get(pageId) as PreparationPage | null;
+    if (!sealed)
+        throw Error("Bundle preparation page missing after publication");
+    return sealed;
 }
 function userId(ctx: any): string {
     if (!ctx.user?.id)
@@ -181,24 +233,12 @@ export async function prepareBundleDone(ctx: any, args: any) {
     if (saved.value.phase !== "preparing")
         return view(ctx, saved.value);
     const op = saved.value as Operation;
-    // Fixed indexed admission predicate bounds the tail; host created-at/id order never changes.
-    const page = await ctx.storage.messages.query({ where: { admittedAt: { lt: op.cutoff } }, limit: BATCH, cursor: op.cursor });
-    for (const row of page.items) {
-        if (row.data.status === "draft" || row.data.status === "outbox")
-            continue;
-        const threadId = row.data.threadId ?? row.data.messageId;
-        const candidateId = await key(id, threadId);
-        if (await ctx.storage.bundleCandidates.get(candidateId))
-            continue;
-        const state = await snapshotThread(ctx, threadId);
-        if (!state || !isEligibleBundleThread(state.projection, op.bundle))
-            continue;
-        const reason = state.active ? "mutation_unresolved" : !state.projection.admissionComplete ? "admission_unresolved" : !state.projection.maxAdmittedAt || state.projection.maxAdmittedAt >= op.cutoff! ? "new_mail" : undefined;
-        const candidate: Candidate = { version: 1, operationId: id, threadId, latestId: state.projection.latestId, latestRevision: state.latest.revision, incomingId: state.projection.latestIncomingId, overrideRevision: state.override?.revision ?? null, assignment: JSON.stringify(state.projection.bundle), unread: state.projection.hasUnread, outcome: reason ? "skipped" : "pending", ...(reason ? { reason } : {}) };
-        await ctx.storage.bundleCandidates.compareAndSet(candidateId, null, candidate);
+    const page = await preparationPage(ctx, op);
+    // The cursor (and Ready) advances only after every sealed candidate is durable.
+    // Replays are create-only: even a late worker cannot reset a Done outcome.
+    for (const candidate of page.candidates) {
+        await ctx.storage.bundleCandidates.compareAndSet(candidate.id, null, candidate.data);
     }
-    if (page.hasMore && (!page.cursor || page.cursor === op.cursor))
-        throw Error("Bundle snapshot cursor did not advance");
     saved = await updateOperation(ctx, saved, { cursor: page.hasMore ? page.cursor : undefined, phase: page.hasMore ? "preparing" : "ready" });
     return view(ctx, saved.value);
 }

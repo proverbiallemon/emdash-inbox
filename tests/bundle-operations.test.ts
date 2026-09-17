@@ -347,3 +347,112 @@ it("retires its own intent on known no-write rejections while preserving normal 
     await expect(route("move", { threadId: "t1", bundle: "fans" })).rejects.toMatchObject({ status: 409 });
     expect(await ctx.storage.threadMutationIntents.count()).toBe(0);
 });
+it.each(["ready", "complete"])("does not expand confirmed scope when a stale preparer resumes after %s", async (phase) => {
+    await putMessage(ctx, "m1", message(1, { pinned: true }));
+    await ready();
+    await prepare("warmup");
+    let resume!: () => void, reached!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    const release = new Promise<void>(resolve => { resume = resolve; });
+    const get = ctx.storage.bundleCandidates.get.bind(ctx.storage.bundleCandidates);
+    let once = true;
+    vi.spyOn(ctx.storage.bundleCandidates, "get").mockImplementation(async (id: any) => {
+        const result = await get(id);
+        if (once) {
+            once = false;
+            reached();
+            await release;
+        }
+        return result;
+    });
+    const stale = route("done-prepare", { bundle: "orders", requestId: "race" });
+    await paused;
+    const confirmed = await route("done-prepare", { bundle: "orders", requestId: "race" });
+    expect(confirmed).toMatchObject({ phase: "ready", total: 0 });
+    if (phase === "complete")
+        expect(await finish(confirmed.id)).toMatchObject({ phase: "complete", total: 0 });
+    await mutateMessage(ctx, "m1", () => ({ pinned: false }));
+    resume();
+    const late = await stale;
+    const completed = await finish(confirmed.id);
+    expect({ lateTotal: late.total, total: completed.total, done: completed.counts.done, pending: completed.counts.pending }).toEqual({ lateTotal: 0, total: 0, done: 0, pending: 0 });
+    expect(await host.messages.get("m1")).toMatchObject({ status: "inbox", read: false });
+});
+it("recovers an unknown sealed-page creation acknowledgement through the same immutable page", async () => {
+    await putMessage(ctx, "m1", message(1));
+    await ready();
+    await prepare("warmup");
+    const create = ctx.storage.bundlePreparationPages.compareAndSet.bind(ctx.storage.bundlePreparationPages);
+    let lost = false;
+    vi.spyOn(ctx.storage.bundlePreparationPages, "compareAndSet").mockImplementation(async (id: any, revision: any, next: any) => {
+        const result = await create(id, revision, next);
+        if (!lost) {
+            lost = true;
+            throw Error("page acknowledgement lost");
+        }
+        return result;
+    });
+    const op = await prepare("unknown-page");
+    expect(op).toMatchObject({ phase: "ready", total: 1 });
+    expect(await ctx.storage.bundlePreparationPages.count({ operationId: op.id })).toBe(1);
+    expect(await prepare("unknown-page")).toMatchObject({ id: op.id, total: 1 });
+    expect((await finish(op.id)).counts.done).toBe(1);
+    expect(await host.messages.get("m1")).toMatchObject({ status: "done", read: false });
+});
+it.each(["before write", "after write"])("replays only the sealed candidate scope after candidate publication fails %s", async (failure) => {
+    await putMessage(ctx, "m1", message(1));
+    await putMessage(ctx, "m2", message(2, { pinned: true }));
+    await ready();
+    const warmup = await prepare("warmup");
+    const create = ctx.storage.bundleCandidates.compareAndSet.bind(ctx.storage.bundleCandidates);
+    let failed = false;
+    vi.spyOn(ctx.storage.bundleCandidates, "compareAndSet").mockImplementation(async (id: any, revision: any, next: any) => {
+        if (!failed && revision === null) {
+            failed = true;
+            if (failure === "after write")
+                await create(id, revision, next);
+            throw Error("candidate publication interrupted");
+        }
+        return create(id, revision, next);
+    });
+    await expect(route("done-prepare", { bundle: "orders", requestId: "interrupted" })).rejects.toThrow("candidate publication interrupted");
+    const pages = await ctx.storage.bundlePreparationPages.query();
+    const page = pages.items.find((row: any) => row.data.operationId !== warmup.id);
+    expect(page.data.candidates).toHaveLength(1);
+    expect(await route("done-status", { operationId: page.data.operationId })).toMatchObject({ phase: "preparing" });
+    await expect(route("done-run", { operationId: page.data.operationId })).rejects.toMatchObject({ status: 409 });
+    await mutateMessage(ctx, "m2", () => ({ pinned: false }));
+    const op = await prepare("interrupted");
+    expect(op.total).toBe(1);
+    expect((await finish(op.id)).counts).toMatchObject({ done: 1, pending: 0 });
+    expect(await host.messages.get("m1")).toMatchObject({ status: "done", read: false });
+    expect(await host.messages.get("m2")).toMatchObject({ status: "inbox", read: false });
+});
+it("late sealed-page publication cannot reset a terminal outcome or a subsequent manual reopen", async () => {
+    await putMessage(ctx, "m1", message(1));
+    await ready();
+    await prepare("warmup");
+    let resume!: () => void, reached!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    const release = new Promise<void>(resolve => { resume = resolve; });
+    const create = ctx.storage.bundleCandidates.compareAndSet.bind(ctx.storage.bundleCandidates);
+    let once = true;
+    vi.spyOn(ctx.storage.bundleCandidates, "compareAndSet").mockImplementation(async (id: any, revision: any, next: any) => {
+        if (once && revision === null) {
+            once = false;
+            reached();
+            await release;
+        }
+        return create(id, revision, next);
+    });
+    const stale = route("done-prepare", { bundle: "orders", requestId: "late-publish" });
+    await paused;
+    const op = await prepare("late-publish");
+    expect(op).toMatchObject({ phase: "ready", total: 1 });
+    expect((await finish(op.id)).counts.done).toBe(1);
+    await mutateMessage(ctx, "m1", () => ({ status: "inbox" }));
+    resume();
+    expect(await stale).toMatchObject({ phase: "complete", total: 1, counts: { done: 1, pending: 0 } });
+    expect((await finish(op.id, true)).counts).toMatchObject({ done: 1, pending: 0 });
+    expect(await host.messages.get("m1")).toMatchObject({ status: "inbox", read: false });
+});
