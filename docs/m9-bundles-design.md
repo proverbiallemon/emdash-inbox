@@ -1,6 +1,6 @@
 # M9.1 — Daylight bundles
 
-Status: approved and implemented locally on `codex/m9-bundles`, September 17, 2026. PBWeb remains on the deployed Daylight baseline. The prototype and local acceptance preview use synthetic mail.
+Status: merged in PR #10 and deployed on PBWeb, September 17, 2026. See the [production rollout and live acceptance](m9-bundles-production-2026-09-17.md). The prototype and local acceptance preview use synthetic mail.
 
 [Start the prototype](https://www.figma.com/proto/WLQW6Xb9GEjPqCxq6iabg0?node-id=119-3200&page-id=100%3A411&starting-point-node-id=119%3A3200&scaling=scale-down).
 [Open the bundled inbox design](https://www.figma.com/design/WLQW6Xb9GEjPqCxq6iabg0?node-id=102-411).
@@ -190,5 +190,5 @@ The primary interactive path covers Top Inbox → Orders expansion → conversat
 - Added ten small foundation tokens and five Manrope text styles. The new muted/control colors match the deployed contrast corrections; existing concept pages were not recolored.
 - Visually inspected the main Inbox, expanded bundle, Left layout and expansion, mobile Inbox and expansion, correction dialogs, completion confirmation, settings, empty state, partial failure and review guide.
 - Programmatic inspection found only Manrope text, no missing fonts, no placeholder labels, no overflow in unclipped auto-layout containers, no overlapping top-level design frames and no broken navigation targets.
-- Figma navigation targets were validated structurally. Real browser interaction and screen-reader acceptance are still required when implementing the UI.
+- Figma navigation targets were validated structurally. Browser interaction is covered by the local verification above and the production rollout report; physical screen-reader acceptance remains.
 - No production deployment, mail send, database migration, or application-code change was performed for this design pass.
