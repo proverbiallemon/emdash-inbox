@@ -26,9 +26,6 @@ yarn-debug.log*
 # Worktrees
 .worktrees/
 
-# Private working notes (not for upstream)
-.docs/
-
 # Claude Code local config (per-dev, not for upstream)
 .claude/
 
