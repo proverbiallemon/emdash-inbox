@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepted receipts recover into Sent, and unknown outcomes require operator review.
 - Stable optional request IDs on sending routes/tools, plus three delivery review
   MCP tools. Browser retries retain the original request instead of starting another.
-  See `docs/durable-send-recovery.md` for limits and resolution behavior.
+  See [Outbox and send recovery](README.md#outbox-and-send-recovery) for limits and resolution behavior.
 
 - Native EmDash MCP registration for all 20 inbox tools, with host-managed
   authentication, plugin consent, scope checks, and destructive-tool metadata.
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resumable migration and substring search, and UI load-more/refresh controls.
 - Private R2 attachment storage with authenticated chunked downloads, draft
   upload/remove/send lifecycle, three attachment MCP tools, and byte-preserving
-  inbound MIME envelopes. See `docs/mailbox-and-attachments.md` for limits/setup.
+  inbound MIME envelopes. See [private attachments](README.md#private-attachments-and-pagination) for limits and setup.
 
 ### Fixed
 

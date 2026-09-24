@@ -52,4 +52,4 @@ with `direction: "inbound"` within a few seconds.
 - **MIME parse errors**: the plugin logs these with `ctx.log.error` — tail
   your emdash host's logs.
 
-The 0.9 protocol sends `{rawMimeBase64}` to preserve binary MIME bytes. Raw messages over8MiB are rejected before buffering. The host also caps decoded text/HTML at256KiB and attachment count at32; it requires a separate private `INBOX_ATTACHMENTS` R2 binding for files. Deploy the upgraded host before this sidecar. See [private attachment setup](../../docs/mailbox-and-attachments.md).
+The 0.9 protocol sends `{rawMimeBase64}` to preserve binary MIME bytes. Raw messages over8MiB are rejected before buffering. The host also caps decoded text/HTML at256KiB and attachment count at32; it requires a separate private `INBOX_ATTACHMENTS` R2 binding for files. Deploy the upgraded host before this sidecar. See [private attachment setup](../../README.md#private-attachments-and-pagination).
