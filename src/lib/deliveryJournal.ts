@@ -1,3 +1,4 @@
+import { readProviderDelivery } from "./providerDelivery";
 import { beginThreadMutation, endThreadMutation, finishMessageAdmission } from "./threadMutation";
 import type { MessageDoc } from "../index";
 import { prepareMessage } from "./mailboxStore";
@@ -335,6 +336,7 @@ export async function listDeliveries(ctx: any, input: { limit?: number; cursor?:
 			...(attempt.receipt?.messageId ? { providerMessageId: attempt.receipt.messageId } : {}),
 			...(draft?.value.status === "draft" && draft.value.deliveryAttemptId === attempt.attemptId ? { draftId: attempt.messageId } : {}),
 			canResolve: attempt.state === "uncertain",
+			...(attempt.receipt?.messageId ? { providerDelivery: await readProviderDelivery(ctx, { ...attempt.snapshot, transportMessageId: attempt.receipt.messageId }, true) } : {}),
 		});
 	}
 	return {

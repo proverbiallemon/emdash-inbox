@@ -1,3 +1,5 @@
+import { ProviderDeliveryStatus } from "./ProviderDeliveryStatus";
+import type { DeliverySummary } from "../lib/providerDelivery";
 import * as React from "react";
 import { ThreadMessageBody } from "./ThreadMessageBody";
 import { AttachmentDownloads } from "./AttachmentDownloads";
@@ -5,6 +7,7 @@ import type { PublicAttachment } from "../lib/attachments";
 export interface ThreadMessageRow {
  id: string;
  data: {
+  providerDelivery?: DeliverySummary | null;
   direction: "inbound" | "outbound"; from: string; to: string; toAll?: string[]; cc?: string[];
   subject: string; bodyText: string; bodyHtml: string | null; receivedAt: string; attachments?: PublicAttachment[];
  };
@@ -23,6 +26,7 @@ export function ThreadMessage({ row, showImages, onRevealImages }: { row: Thread
    </div>
    <time dateTime={m.receivedAt}>{time.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
   </div>
+  {m.direction === "outbound" && <ProviderDeliveryStatus delivery={m.providerDelivery} />}
   <ThreadMessageBody bodyHtml={m.bodyHtml} bodyText={m.bodyText} showImages={showImages} onRevealImages={onRevealImages} />
   <AttachmentDownloads messageId={row.id} attachments={m.attachments ?? []} />
  </article>;

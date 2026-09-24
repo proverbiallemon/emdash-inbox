@@ -1,7 +1,10 @@
+import { ProviderDeliveryStatus } from "./ProviderDeliveryStatus";
+import type { DeliverySummary } from "../lib/providerDelivery";
 import * as React from "react";
 import { postInbox } from "../lib/attachmentClient";
 
 interface DeliveryItem {
+	providerDelivery?: DeliverySummary | null;
 	attemptId: string;
 	messageId: string;
 	state: "prepared" | "sending" | "accepted" | "uncertain" | "failed" | "sent" | "restored";
@@ -18,7 +21,7 @@ interface DeliveryPage { items: DeliveryItem[]; cursor?: string; hasMore: boolea
 interface Resolution { attemptId: string; mode: "sent" | "restore" }
 const LABELS: Record<DeliveryItem["state"], string> = {
 	prepared: "Preparing", sending: "Sending", accepted: "Accepted — mailbox update pending",
-	uncertain: "Delivery uncertain", failed: "Delivery failed", sent: "Sent", restored: "Restored as draft",
+	uncertain: "Delivery uncertain", failed: "Delivery failed", sent: "Accepted for delivery", restored: "Restored as draft",
 };
 const buttonClass = "rounded border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -100,6 +103,7 @@ export function OutboxView() {
 		{items.map(item => <article key={item.attemptId} className="rounded-lg border p-4 space-y-2">
 			<div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-medium break-words">{item.subject || "(no subject)"}</h3><span className="rounded bg-muted px-2 py-1 text-xs">{LABELS[item.state]}</span></div>
 			<p className="text-sm break-words">To: {item.to.join(", ") || "(no recipients)"}</p>
+			<ProviderDeliveryStatus delivery={item.providerDelivery} />
 			<p className="text-xs text-muted-foreground">Updated {new Date(item.updatedAt).toLocaleString()}</p>
 			{item.state === "uncertain" && <p className="text-sm">The provider may have accepted this email. Check its delivery logs or ask the recipient before choosing a resolution.</p>}
 			{item.state === "accepted" && <p className="text-sm">The provider accepted this email and its receipt is saved. The mailbox update still needs recovery. Use Refresh and reconcile; do not send it again.</p>}

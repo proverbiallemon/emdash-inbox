@@ -9,7 +9,7 @@ import { getCoreMigrationIdentity } from "emdash/migrations";
 import { createPlugin, type MessageDoc } from "../../src/index";
 
 /** Native plugin integration harness: real EmDash migrations, SQL and route dispatch. */
-export async function createNativeHost() {
+export async function createNativeHost(pluginOptions: Parameters<typeof createPlugin>[0] = {}) {
 	const directory = await mkdtemp(join(tmpdir(), "emdash-inbox-test-"));
 	const url = join(directory, "data.db");
 	const executor = await createMigrationExecutor({ url }, { projectRoot: directory, env: {} });
@@ -20,7 +20,7 @@ export async function createNativeHost() {
 	});
 	await executor.dispose?.();
 	const db = new Kysely<Database>({ dialect: createDialect({ url }) });
-	const plugin = createPlugin();
+	const plugin = createPlugin(pluginOptions);
 	const manager = new PluginManager({ db });
 	manager.register(plugin);
 	await manager.activate(plugin.id);
