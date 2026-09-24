@@ -110,6 +110,8 @@ Daylight is deployed on PBWeb with EmDash 0.38.0. The [September 17 rollout repo
 
 M9.1 bundles are also deployed on PBWeb: six Inbox categories, conversation corrections, optional exact-sender rules, account grouping preferences, and resumable bundle completion. See the [bundle rollout report](docs/m9-bundles-production-2026-09-17.md) and [specification](docs/m9-bundles-design.md).
 
+Rich signatures with fonts, colors, links, and uploaded logos are deployed on PBWeb. See the [September 24 rollout report](docs/signatures-production-2026-09-24.md) for the exact artifact and live verification.
+
 Run `pnpm dev:preview` from a source checkout to open the real UI with synthetic mail at `http://127.0.0.1:4317/`. The preview sends no email. **Reset sample mail** restores the fixture; refreshing retains synthetic bundle-operation state for recovery checks. Production still uses EmDash's authenticated plugin routes.
 
 ## Roadmap
