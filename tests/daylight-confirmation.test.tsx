@@ -5,6 +5,8 @@ import { ComposeView } from "../src/components/ComposeView";
 import { ReplyCompose } from "../src/components/ReplyCompose";
 import { NavigationProvider, useMailNavigation } from "../src/daylight/navigation";
 
+vi.mock("../src/lib/signatureClient", () => ({ getSignature: async () => ({ signature: { text: "", newMessages: true, replies: true }, canSave: true }) }));
+
 vi.mock("../src/components/TipTapEditor", () => ({
  TipTapEditor: ({ onReady }: { onReady: (editor: any) => void }) => {
   const editor=React.useMemo(()=>({getHTML:()=>"<p>Keep this message</p>",getText:()=>"Keep this message",commands:{focus(){}},setEditable(){}}),[]);
@@ -47,7 +49,7 @@ it("cancels a suspended destination when its editor is removed",async()=>{
  let navigated=false;
  function Link(){const allow=useMailNavigation();return <button onClick={async()=>{if(await allow())navigated=true;}}>Leave editor</button>;}
  const view=(editor:boolean)=><NavigationProvider><Link/>{editor&&<ComposeView draftId={null} onClose={()=>{}}/>}</NavigationProvider>;
- await act(()=>root.render(view(true)));await click("Leave editor");
+ await act(()=>root.render(view(true)));await editSubject();await click("Leave editor");
  expect(container.querySelector("dialog[open]")).not.toBeNull();
  await act(()=>root.render(view(false)));
  expect(navigated).toBe(false);expect(container.querySelector("dialog")).toBeNull();
@@ -72,6 +74,7 @@ it("cancels with Escape and blocks a host link until the editor confirms",async(
  hostLink.addEventListener("click",event=>{event.preventDefault();navigated=true;});
  try{
   await act(()=>root.render(<NavigationProvider><ComposeView draftId={null} onClose={()=>{}}/></NavigationProvider>));
+  await editSubject();
   await act(()=>hostLink.click());
   expect(navigated).toBe(false);const dialog=container.querySelector("dialog[open]");expect(dialog).not.toBeNull();
   await act(()=>dialog!.dispatchEvent(new Event("cancel",{cancelable:true})));
@@ -84,12 +87,13 @@ it("does not queue competing destinations behind one confirmation",async()=>{
  const destinations:string[]=[];
  function Links(){const allow=useMailNavigation();return <>{["First","Second"].map(label=><button key={label} onClick={async()=>{if(await allow())destinations.push(label);}}>{label}</button>)}</>;}
  await act(()=>root.render(<NavigationProvider><Links/><ComposeView draftId={null} onClose={()=>{}}/></NavigationProvider>));
+ await editSubject();
  await act(()=>{button("First").click();button("Second").click();});
  expect(destinations).toEqual([]);await click("Leave without saving");expect(destinations).toEqual(["First"]);
 });
 
 it("wraps Tab and Shift-Tab inside the confirmation",async()=>{
- await act(()=>root.render(<ComposeView draftId={null} onClose={()=>{}}/>));await click("Discard");
+ await act(()=>root.render(<ComposeView draftId={null} onClose={()=>{}}/>));await editSubject();await click("Discard");
  const dialog=container.querySelector<HTMLDialogElement>('dialog[open]')!;
  const first=dialog.querySelector<HTMLButtonElement>('button')!;const last=button("Discard email");
  for(const element of dialog.querySelectorAll<HTMLElement>('button'))vi.spyOn(element,'getClientRects').mockReturnValue([{}] as unknown as DOMRectList);

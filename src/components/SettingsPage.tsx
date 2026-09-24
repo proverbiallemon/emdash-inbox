@@ -1,12 +1,13 @@
 import * as React from "react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import { SignatureSettings } from "./SignatureSettings";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
 /**
  * Plugin-owned settings surface. EmDash's settingsSchema never grew the
  * auto-generated admin UI its type annotation promises, so the plugin
- * renders and persists its two settings itself via settings/get + save.
+ * renders and persists its settings itself.
  */
 export function SettingsPage() {
 	const [senderAddress, setSenderAddress] = React.useState("");
@@ -100,10 +101,11 @@ export function SettingsPage() {
 			<div>
 				<h1 className="text-3xl font-bold">Inbox Settings</h1>
 				<p className="text-muted-foreground mt-1">
-					Delivery and inbound configuration for emdash-inbox.
+					Your signature, delivery and inbound configuration for emdash-inbox.
 				</p>
 			</div>
 			<p><a href="/_emdash/admin/plugins/emdash-inbox?settings=bundles">Manage bundles in Inbox</a> — grouping and layout preferences for your account.</p>
+			<SignatureSettings />
 			{error && (
 				<div className="p-2 rounded border border-destructive/50 bg-destructive/5 text-sm text-destructive">
 					{error}

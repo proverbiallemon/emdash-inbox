@@ -156,6 +156,13 @@ describe("prepareEmailHtml image-reveal metadata", () => {
 });
 
 describe("sanitizeComposeHtml", () => {
+	it("preserves signature typography while rejecting CSS resources and UI overrides", () => {
+		const raw = '<p style="text-align:center;position:fixed"><span style="font-family:Georgia,serif;font-size:18px;color:rgb(36, 91, 224);background-color:#fff0e1;background-image:url(https://tracker.example/pixel);display:none">Alex</span></p>';
+		for (const out of [sanitizeComposeHtml(raw), sanitizeEmailHtml(raw, { allowExternalImages: false })]) {
+			expect(out).toContain("font-family:Georgia,serif"); expect(out).toContain("font-size:18px"); expect(out).toContain("color:rgb(36, 91, 224)"); expect(out).toContain("text-align:center");
+			expect(out).not.toMatch(/position|display|tracker|background-image/);
+		}
+	});
 	it("passes the StarterKit element set through unchanged", () => {
 		const html =
 			"<p>para</p>" +
@@ -185,7 +192,7 @@ describe("sanitizeComposeHtml", () => {
 		expect(out).toContain("after");
 	});
 
-	it("strips <img> regardless of src", () => {
+	it("strips remote and invalid inline images", () => {
 		const data =
 			'<p>x</p><img src="https://tracker.example/x.png"><img src="data:image/png;base64,iVBOR=">';
 		const out = sanitizeComposeHtml(data);

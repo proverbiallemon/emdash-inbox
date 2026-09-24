@@ -10,7 +10,7 @@ Outbound goes through the native Cloudflare Email Sending Workers binding — no
 
 **Pre-alpha (v0.10.0, development).** Inbound/outbound mail, complete conversation pagination, pin / snooze / done, read state, compose/reply-all with CC/BCC, drafts, private attachments, settings, durable send recovery, and 20 native MCP tools are implemented. Signatures and undo remain planned.
 
-Requires **EmDash 0.38.x**, tested against **0.38.0**. The mailbox uses resumable indexing and revision-checked writes. EmDash caps each storage query at 100 rows; complete operations now follow continuations. See [compatibility notes](docs/emdash-0.38-compatibility.md) and [pagination/attachment contracts and limits](docs/mailbox-and-attachments.md).
+Requires **EmDash 0.38.x**, tested against **0.38.0**. The mailbox uses resumable indexing and revision-checked writes. EmDash caps each storage query at 100 rows; complete operations now follow continuations. See [private attachments and pagination](#private-attachments-and-pagination) for setup and limits.
 
 ## Why this exists
 
@@ -44,7 +44,7 @@ As of EmDash 0.38.0, the Cloudflare adapter ships a first-party `cloudflare-emai
    ```
    Add `"emdash-inbox"` to `vite.ssr.noExternal`. The plugin's runtime deps (`@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/pm`, `@tiptap/core`, `dompurify`, `postal-mime`) also want to be listed there to avoid Vite optimizer cascades during dev — the browser still serves correctly without them, the cascades are just noisy.
 4. **Configure plugin settings** at Admin → Inbox Settings: `senderAddress` (your verified sender) and `inboundSecret` (a long random string shared with the inbound sidecar worker — the page can generate one). Headless alternative: `POST /_emdash/api/plugins/emdash-inbox/settings/save` with an admin API token, the `X-EmDash-Request: 1` header, and a JSON body of `{"senderAddress": ..., "inboundSecret": ...}`.
-5. **Configure private attachments** using a separate R2 bucket bound as `INBOX_ATTACHMENTS`, with public access disabled. Never reuse EmDash’s `MEDIA` bucket. See [setup and limits](docs/mailbox-and-attachments.md).
+5. **Configure private attachments** using a separate R2 bucket bound as `INBOX_ATTACHMENTS`, with public access disabled. Never reuse EmDash’s `MEDIA` bucket. See [setup and limits](#private-attachments-and-pagination).
 6. **Deploy the inbound sidecar Worker** under `examples/inbound-email-worker/` and bind it to your domain via Cloudflare Email Routing. The sidecar POSTs a byte-preserving `rawMimeBase64` JSON envelope to `POST /_emdash/api/plugins/emdash-inbox/inbound`, gated by `X-Inbound-Secret` matching the value you configured in step 4.
 7. **Enable a Cron Trigger on the host Worker** (EmDash ≥ 0.19). EmDash no longer piggybacks scheduled work on requests; without a Cron Trigger, snoozed messages never wake back to the inbox (and EmDash's own scheduled publishing stalls too). Your host's `src/worker.ts` should re-export the scheduled handler, and `wrangler.jsonc` needs the trigger:
    ```ts
@@ -59,6 +59,42 @@ As of EmDash 0.38.0, the Cloudflare adapter ships a first-party `cloudflare-emai
 
 Operators upgrading from 0.6.x: the `accountId` and `apiToken` fields are gone — existing rows for those settings are cleared automatically on first request after upgrade. The CF API token they referenced can be revoked.
 
+### Private attachments and pagination
+
+Create a separate private R2 bucket, disable its public managed/custom domains, and bind it as `INBOX_ATTACHMENTS` in the host's Wrangler configuration:
+
+```jsonc
+"r2_buckets": [
+  { "binding": "MEDIA", "bucket_name": "your-existing-public-media" },
+  { "binding": "INBOX_ATTACHMENTS", "bucket_name": "your-private-inbox-files" }
+]
+```
+
+Do not configure that bucket as EmDash's media provider. Email downloads use authenticated plugin routes; the public media bucket must never hold email files. Deploy the host and the supplied inbound sidecar together. The sidecar sends `{rawMimeBase64}` to preserve attachment bytes.
+
+- Incoming MIME: 8 MiB maximum, decoded text plus HTML up to 256 KiB, and up to 32 attachments.
+- Outgoing files: 3 MiB combined and up to 32 attachments; decoded text plus HTML up to 256 KiB. Encoded MIME must also fit the 5 MiB send limit.
+- Downloads require `plugins:manage`, verify message membership, and return chunks up to 256 KiB. Files remain private and follow the draft/message lifecycle.
+- HTTP routes: `attachments/upload` (`draftId`, `filename`, `mimeType?`, `contentBase64`), `attachments/remove` (`draftId`, `attachmentId`), and `attachments/read` (`messageId`, `attachmentId`, `offset?`, `limit?`). The read `messageId` is the storage ID, not the RFC Message-ID. MCP provides `add_draft_attachment`, `remove_draft_attachment`, and `read_attachment`.
+
+Conversation lists load 25 rows by default, up to 100 per request. `threads/list`, `list_threads`, and `search_messages` return `{items,cursor?,hasMore,indexing?}`. Continue the cursor while `hasMore` is true, even if a search page is empty. Refresh starts a new traversal; live edits may move conversations across page boundaries. While initial indexing is incomplete, `indexing:true` signals that results are still being built. The legacy complete-mailbox route and very large single-thread responses remain unbounded.
+
+### Outbox and send recovery
+
+The durable journal records a send attempt before contacting the provider. Accepted provider receipts are saved before the message moves to Sent. Recovery repeats the local mailbox write, never the provider send. Definitive pre-acceptance rejection restores an editable draft; ambiguous failures remain locked for operator review. A crash between provider acceptance and saving its receipt cannot guarantee exactly-once delivery.
+
+Use **Refresh/reconcile** to recover stored receipts. For an uncertain attempt, verify delivery before **Confirm sent**, supplying the actual provider Message-ID when available. **Restore draft** acknowledges duplicate-send risk and unlocks the draft; sending again remains a separate action. Keep a compatible plugin build while unresolved attempts exist.
+
+Sending routes and MCP tools accept an optional `requestId` (1–200 characters). Keep the same key and input when retrying a request after losing its response. A request that never reached the server may initiate its first send; an existing journal attempt returns its recorded state without resending. Responses include `attemptId` and `deliveryStatus` (`sent`, `pending`, `uncertain`, or `failed`); HTTP success alone does not prove delivery.
+
+Private `deliveries/list`, `deliveries/reconcile`, and `deliveries/resolve` routes require `plugins:manage`. The matching MCP tools are `list_deliveries`, `reconcile_deliveries`, and `resolve_delivery`. Listing is read-only; reconcile and resolve change stored state. Delivery summaries omit message bodies, BCC addresses, raw MIME, and private object keys. Refresh MCP consent after upgrades that change tool definitions.
+
+### Email signatures
+
+Open **Mail settings → Email signature** to build a personal rich-text signature with fonts, sizes, text and highlight colors, bold/italic/underline, links, lists, and alignment. Upload a PNG, JPEG, GIF, or WebP logo; select it to set its description and width. Choose independently whether to include it in new messages and replies/reply all. Clear the editor and save to remove it. Each EmDash login has its own signature, even when users share the same sender address.
+
+The signature appears in the editor before you send, above quoted text in replies, and can be edited or removed for that message. Existing drafts keep their saved body when reopened, including any older signature. Signatures are applied only when starting mail in the Inbox UI; system emails and API/MCP sends are unchanged. The private `signature/get` and `signature/save` routes require `plugins:manage`; saving also requires a signed-in user, not a userless API token. The save body is `{ "text": "Your name", "html": "<p><strong>Your name</strong></p>", "newMessages": true, "replies": true }`. HTML is optional for plain-text clients; when supplied it is sanitized on the server and its text fallback is derived from the sanitized content. Limits are 10,000 text characters, 128 KiB of HTML, and 64 KiB total uploaded image bytes. Remote images, active markup, and resource-loading CSS are removed. Uploaded logos remain self-contained in drafts and are sent as inline MIME attachments with Content-IDs. Font appearance depends on the recipient’s available fonts.
+
 ### Troubleshooting
 
 - **`No email provider configured` / `EMAIL_NOT_CONFIGURED` after install.** Tail the host worker (`wrangler tail`) and look for `[hooks] Plugin "emdash-inbox" declares email:deliver hook without hooks.email-transport:register capability — skipping`. That message means your host is on EmDash 0.14+ and is bundling an older `definePlugin` from `emdash-inbox`'s nested `node_modules`. Make sure `emdash-inbox`'s `devDependencies.emdash` matches your host's installed version (≥0.14) and rebuild the plugin with `pnpm install && pnpm build`. This development version requires EmDash 0.38.x.
@@ -66,7 +102,7 @@ Operators upgrading from 0.6.x: the `accountId` and `apiToken` fields are gone �
 - **Inbox admin page or `messages/*` routes return 403 for some users.** Since EmDash 0.28.1, every private plugin route requires the `plugins:manage` permission (and the `X-EmDash-Request` header) on all HTTP methods, including reads. Users below that permission tier — e.g. editors — can no longer reach the inbox API. Grant the role `plugins:manage` or have an administrator use the inbox.
 - **A Proton test reaches Proton but not Inbox.** Proton may deliver internally between addresses hosted in the same account, bypassing Cloudflare MX and the ingest worker. Use a sender that traverses the external SMTP route. Confirm both delivery paths in the worker logs.
 - **Snoozed messages never come back.** See operator setup step 7 — the host Worker needs a Cron Trigger on EmDash ≥ 0.19.
-- **Astro 7 / Vite 8 Node host starts with a Kysely class-initialization error.** This also reproduced without the plugin. See the tested [host bundling workaround](docs/emdash-0.38-compatibility.md#astro-7--vite-8-host-bundling-workaround).
+- **Astro 7 / Vite 8 Node host starts with a Kysely class-initialization error.** This also reproduced without the plugin. On the affected Node host, installing `kysely@0.29.6` as a host dependency and adding `vite.ssr.external: ["kysely"]` resolved it. Recheck after bundler or EmDash upgrades; this is not a required Cloudflare configuration.
 
 ## Connecting Claude (or any MCP client)
 
@@ -81,7 +117,7 @@ EmDash owns MCP transport, authentication, scope checks, and plugin consent. Sen
 
 The old `messages/mcp` JSON-RPC route remains for existing integrations. Its optional [proxy example](examples/mcp-proxy-route/) now requires **each caller's own Bearer token**. If you deployed the previous example, replace or remove it and revoke its shared `EMDASH_INBOX_MCP_TOKEN`: that version delegated the host token to anonymous requests. New clients should use the native endpoint above.
 
-See [durable send recovery](docs/durable-send-recovery.md) for Outbox behavior, stable request IDs, operator resolution, and recovery limits.
+See [Outbox and send recovery](#outbox-and-send-recovery) for delivery states and operator actions.
 
 ## Development checks
 
@@ -98,11 +134,9 @@ pnpm validate
 
 ### Daylight UI preview
 
-The Daylight mail UI adds account-specific Top/Left navigation, an expanded window with dashboard return, responsive conversation and compose views, and private attachment previews. See the [design handoff and coverage](docs/daylight-design.md) for implemented behavior and future tools.
+The Daylight mail UI adds account-specific Top/Left navigation, an expanded window with dashboard return, responsive conversation and compose views, and private attachment previews.
 
-Daylight is deployed on PBWeb with EmDash 0.38.0. The [September 17 rollout report](docs/daylight-production-2026-09-17.md) records the exact build, live checks, and remaining acceptance limits.
-
-M9.1 bundles are also deployed on PBWeb: six Inbox categories, conversation corrections, optional exact-sender rules, account grouping preferences, and resumable bundle completion. See the [bundle rollout report](docs/m9-bundles-production-2026-09-17.md) and [specification](docs/m9-bundles-design.md).
+M9.1 bundles add six Inbox categories, conversation corrections, optional exact-sender rules, account grouping preferences, and resumable bundle completion.
 
 Run `pnpm dev:preview` from a source checkout to open the real UI with synthetic mail at `http://127.0.0.1:4317/`. The preview sends no email. **Reset sample mail** restores the fixture; refreshing retains synthetic bundle-operation state for recovery checks. Production still uses EmDash's authenticated plugin routes.
 
@@ -118,10 +152,10 @@ Run `pnpm dev:preview` from a source checkout to open the real UI with synthetic
 | **M6** ✅ | Thread-grouping in the inbox list (one card per thread with participant chips, message-count badge, message preview and expandable conversation history); per-message read state with auto-mark-read on thread open; latest-message-wins filter behavior; new `<ThreadCard>` with fan-out hover actions matching `<ThreadView>`'s bulk-action pattern. |
 | **M7** ✅ | REST-to-native binding migration for outbound (drops the `accountId` / `apiToken` settings + the `network:fetch` capability); admin-auth `messages/mcp` route exposing 7 inbox tools over JSON-RPC 2.0 (`list_threads`, `get_thread`, `search_messages`, `mark_read`, `pin_thread`, `snooze_thread`, `mark_done`); typed `EmailBinding` + `DeliverError` + `wrapBindingError()` helper module. |
 | **M8** ✅ | Compose-from-scratch with CC / BCC, reply-all, and the full draft lifecycle (save / resume / send / discard, Drafts tab) — in both the admin UI **and** the `messages/mcp` route (7 new tools, catalog of 14), all wrapping one shared operations core. Host-side MCP proxy example so Claude and other MCP clients can connect despite the response envelope. Attachments, signatures, toast undo, and pagination moved to M8b. |
-| **M8b** ✅ | Private inbound/outbound attachments, complete thread pagination, resumable substring search, and server-side thread actions. Signatures and toast undo remain follow-up polish. |
+| **M8b** ✅ | Private inbound/outbound attachments, complete thread pagination, resumable substring search, and server-side thread actions. Personal rich-text email signatures with uploaded logos are implemented; toast undo remains follow-up polish. |
 | **Send recovery** ✅ | Durable send attempts, locked Outbox, receipt recovery, stable request IDs, and explicit review of uncertain outcomes. |
-| **Daylight UI** | Deployed on PBWeb: Top/Left navigation, full-window mode, responsive read/compose, search, private attachment previews, and host-link draft protection. See the rollout report for acceptance coverage. |
-| **M9.1 — Bundles** ✅ | Deployed on PBWeb: Orders, Shipping, Commissions, Fans, Promos and Updates; manual corrections and exact-sender rules; grouping preferences; resumable completion with per-conversation outcomes. See the rollout report for verification and remaining limits. |
+| **Daylight UI** | Deployed on PBWeb: Top/Left navigation, full-window mode, responsive read/compose, search, private attachment previews, and host-link draft protection. |
+| **M9.1 — Bundles** ✅ | Deployed on PBWeb: Orders, Shipping, Commissions, Fans, Promos and Updates; manual corrections and exact-sender rules; grouping preferences; resumable completion with per-conversation outcomes. |
 | **M9 — Remaining** | Highlights: structured field extraction surfaced as inline cards. Reminders and content linking. **v1.0 remains future.** |
 
 ## Attribution

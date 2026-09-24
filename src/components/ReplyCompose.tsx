@@ -11,6 +11,8 @@ import { DraftAttachments } from "./DraftAttachments";
 import { useLeaveGuard } from "../daylight/navigation";
 import { useConfirmation, leaveConfirmation } from "../daylight/useConfirmation";
 import { useEditorRevision } from "../daylight/useEditorRevision";
+import { useComposeSignature } from "../lib/useComposeSignature";
+import { SignatureLoading } from "./SignatureLoading";
 
 export interface ReplyComposeDefaults {
 	to: string;
@@ -34,6 +36,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard,
 	const [cc, setCc] = React.useState(defaults.cc ?? "");
 	const [subject, setSubject] = React.useState(defaults.subject);
 	const [editor, setEditor] = React.useState<Editor | null>(null);
+	const signature = useComposeSignature("replies", defaults.quoteHtml);
 	const [savedSnapshot, setSavedSnapshot] = React.useState<ReplySnapshot | null>(null);
 	const [attachments, setAttachments] = React.useState<PublicAttachment[]>([]);
 	const currentDraft = React.useRef<string | null>(null);
@@ -41,7 +44,7 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard,
 	const delivery = useDeliveryAttempt();
 	const confirmation = useConfirmation();
 	useEditorRevision(editor);
-	const disabled = busy !== null || delivery.status !== null;
+	const disabled = busy !== null || delivery.status !== null || signature.html === null;
 
 	const handleEditorReady = React.useCallback((ed: Editor) => {
 		setEditor(ed);
@@ -137,7 +140,8 @@ export function ReplyCompose({ defaults, inReplyTo, threadId, onSent, onDiscard,
 			<input type="text" className={inputClass} value={subject} disabled={disabled} onChange={(event) => setSubject(event.target.value)} />
 		</label>
 		{editor && <fieldset disabled={disabled}><ComposeToolbar editor={editor} /></fieldset>}
-		<TipTapEditor initialContent={defaults.quoteHtml} onReady={handleEditorReady} />
+		<SignatureLoading state={signature} />
+		{signature.html !== null && <TipTapEditor initialContent={signature.html} onReady={handleEditorReady} />}
 		<DraftAttachments attachments={attachments} disabled={disabled || !editor} uploading={busy === "upload"} onUpload={(files) => void handleUpload(files)} onRemove={(id) => void handleRemove(id)} />
 		<div className="dl-compose-actions">
 			<button type="button" className="text-sm px-4 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed" disabled={disabled || !editor} onClick={() => void handleSend()}>{busy === "send" ? "Sending…" : "Send"}</button>

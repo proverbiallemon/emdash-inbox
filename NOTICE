@@ -14,8 +14,11 @@ This product bundles postal-mime 2.7.4 by Andris Reinman, with a local
 attachment byte-preservation patch, under the MIT-0 license.
 Upstream: https://github.com/postalsys/postal-mime
 The original license is included in vendor/postal-mime-LICENSE.txt.
-Patch and generation provenance are documented in docs/mime-parser.md.
+The byte-preservation patch is patches/postal-mime@2.7.4.patch;
+scripts/vendor-mime.mjs generates and verifies vendor/postal-mime.mjs.
 
 This product embeds the Manrope font, copyright 2018 The Manrope Project
 Authors, under the SIL Open Font License 1.1. The license is included in
-src/daylight/Manrope-OFL.txt. Asset provenance is in docs/daylight-design.md.
+src/daylight/Manrope-OFL.txt. The variable font comes from
+https://github.com/google/fonts/tree/main/ofl/manrope and was converted
+from TTF to WOFF2 without changing glyphs.

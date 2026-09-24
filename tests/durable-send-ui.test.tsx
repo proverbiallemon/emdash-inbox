@@ -6,6 +6,8 @@ import { ReplyCompose } from "../src/components/ReplyCompose";
 import { ThreadView } from "../src/components/ThreadView";
 import { pages } from "../src/admin";
 
+vi.mock("../src/lib/signatureClient", () => ({ getSignature: async () => ({ signature: { text: "", newMessages: true, replies: true }, canSave: true }) }));
+
 vi.mock("../src/components/TipTapEditor", () => ({
 	TipTapEditor: ({ onReady }: { onReady: (editor: any) => void }) => {
 		const editor = React.useMemo(() => ({ getHTML: () => "<p>Delivery body</p>", getText: () => "Delivery body", commands: { focus() {} }, setEditable() {} }), []);

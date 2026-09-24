@@ -13,6 +13,8 @@ import { DeliveryNotice } from "./DeliveryNotice";
 import { useLeaveGuard } from "../daylight/navigation";
 import { useConfirmation, leaveConfirmation } from "../daylight/useConfirmation";
 import { useEditorRevision } from "../daylight/useEditorRevision";
+import { useComposeSignature } from "../lib/useComposeSignature";
+import { SignatureLoading } from "./SignatureLoading";
 
 const API = "/_emdash/api/plugins/emdash-inbox";
 
@@ -52,15 +54,16 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 	const [currentDraftId, setCurrentDraftId] = React.useState<string | null>(draftId);
 	const currentDraft = React.useRef<string | null>(draftId);
 	const [attachments, setAttachments] = React.useState<PublicAttachment[]>([]);
-	const [initialHtml, setInitialHtml] = React.useState<string | null>(draftId ? null : "");
+	const [draftHtml, setDraftHtml] = React.useState<string | null>(null);
+	const signature = useComposeSignature(draftId ? null : "newMessages");
+	const initialHtml = draftId ? draftHtml : signature.html;
 	const [editor, setEditor] = React.useState<Editor | null>(null);
 	const { busy, error, setError, run, locked } = useComposeOperation();
 	const delivery = useDeliveryAttempt();
 	const confirmation = useConfirmation();
 	useEditorRevision(editor);
-	// Fields as of the last successful save; null until something has been
-	// saved (fresh compose) or set from the loaded draft (resumed compose).
-	// Used to decide whether closing needs a confirmation.
+	// Compare against the initial content (including the signature) or the
+	// last successful save when deciding whether closing needs a warning.
 	const [savedSnapshot, setSavedSnapshot] = React.useState<ComposeSnapshot | null>(null);
 
 	// Resume: load the draft's fields before mounting the editor.
@@ -82,7 +85,7 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 				const loadedSubject = draft.subject === "(no subject)" ? "" : draft.subject;
 				const loadedHtml = draft.bodyHtml ?? plainTextToHtml(draft.bodyText);
 				setSubject(loadedSubject);
-				setInitialHtml(loadedHtml);
+				setDraftHtml(loadedHtml);
 				setSavedSnapshot({
 					to: draft.to.join(", "),
 					cc: draft.cc.join(", "),
@@ -99,7 +102,7 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 
 	const handleEditorReady = React.useCallback((ed: Editor) => {
 		setEditor(ed);
-		setSavedSnapshot(current => current ? { ...current, editorHTML: ed.getHTML() } : current);
+		setSavedSnapshot(current => ({ ...(current ?? { to: "", cc: "", bcc: "", subject: "" }), editorHTML: ed.getHTML() }));
 		ed.commands.focus("start");
 	}, []);
 
@@ -172,8 +175,8 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 	// Discard button: deletes the persisted draft (if any) after confirming,
 	// since this is the explicit "throw this away" action.
 	const handleDiscard = async () => {
-		if (locked.current || delivery.isBlocked() || (draftId !== null && initialHtml === null)) return;
-		if ((hasAnyContent() || currentDraftId) && !await confirmation.confirm({ title: "Discard this email?", description: "This removes the email and any saved draft attachments. This cannot be undone.", action: "Discard email" })) return;
+		if (locked.current || delivery.isBlocked() || initialHtml === null) return;
+		if ((isDirty() || currentDraftId) && !await confirmation.confirm({ title: "Discard this email?", description: "This removes the email and any saved draft attachments. This cannot be undone.", action: "Discard email" })) return;
 		if (locked.current || delivery.isBlocked()) return;
 		await run("discard", async () => {
 			if (currentDraft.current) await postInbox("messages/draft-discard", { draftId: currentDraft.current });
@@ -193,7 +196,7 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 	};
 
 	const inputClass = "w-full text-sm border rounded px-2 py-1 disabled:opacity-50";
-	const disabled = busy !== null || delivery.status !== null || (draftId !== null && initialHtml === null);
+	const disabled = busy !== null || delivery.status !== null || initialHtml === null;
 
 	return (
 		<div className="dl-composer" onKeyDown={onKeyDown}>
@@ -235,6 +238,7 @@ export function ComposeView({ draftId, onClose, onSent }: Props) {
 				<input type="text" className={inputClass} value={subject} disabled={disabled} onChange={(e) => setSubject(e.target.value)} />
 			</label>
 			{editor && <fieldset disabled={disabled}><ComposeToolbar editor={editor} /></fieldset>}
+			{!draftId && <SignatureLoading state={signature} />}
 			{initialHtml !== null && <TipTapEditor initialContent={initialHtml} onReady={handleEditorReady} />}
 			<DraftAttachments attachments={attachments} disabled={disabled || !editor} uploading={busy === "upload"} onUpload={(files) => void handleUpload(files)} onRemove={(id) => void handleRemove(id)} />
 			<div className="dl-compose-actions">
