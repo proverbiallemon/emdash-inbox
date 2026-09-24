@@ -33,6 +33,7 @@ import { VERSION } from "./version";
 import { readInboxPreferences, saveInboxPreferences } from "./lib/uiPreferences";
 import { readSignature, saveSignature } from "./lib/signatureSettings";
 import { embedInlineImages } from "./lib/inlineImages";
+import { recordProviderEvent, readProviderDelivery, type DeliveryEventScope } from "./lib/providerDelivery";
 import { requireMailboxReady, MailboxInputError, mailboxCollections, mailboxMessageIndexes, allRows, loadThreadRows, putMessage, mutateMessage, mutateThread, ensureMailboxIndex, listThreadPage, searchMessagePage, wakeSnoozed } from "./lib/mailboxStore";
 import { attachmentCollections, AttachmentError, type StoredAttachment, publicMessage, uploadDraftAttachment, removeDraftAttachment, readAttachment, storeInboundFiles, prepareOutgoingAttachments, retryAttachmentCleanup, decodeBase64, MAX_INBOUND_BYTES, MAX_BODY_BYTES } from "./lib/attachments";
 
@@ -40,7 +41,7 @@ import { attachmentCollections, AttachmentError, type StoredAttachment, publicMe
  * Plugin descriptor — imported in the host site's `astro.config.mjs`.
  * Runs at build time in Vite; must be side-effect-free (no runtime APIs).
  */
-export function emdashInboxPlugin(): PluginDescriptor {
+export function emdashInboxPlugin(options: { deliveryEvents?: DeliveryEventScope } = {}): PluginDescriptor {
 	return {
 		id: "emdash-inbox",
 		version: VERSION,
@@ -51,7 +52,7 @@ export function emdashInboxPlugin(): PluginDescriptor {
 			{ path: "/", label: "Inbox", icon: "envelope" },
 			{ path: "/settings", label: "Inbox Settings", icon: "envelope" },
 		],
-		options: {},
+		options,
 	};
 }
 
@@ -508,7 +509,7 @@ function statusPatch(doc: MessageDoc, status: "inbox" | "done" | "snoozed", snoo
  * minted API token. M7 dropped that path entirely; the binding handles
  * auth implicitly via the Worker's CF account.
  */
-export function createPlugin() {
+export function createPlugin(options: { deliveryEvents?: DeliveryEventScope } = {}) {
 	const native = nativeInboxMcp(deliverEmail, ensureMigrations, mapComposeError, projectSent);
 	return definePlugin({
 		id: "emdash-inbox",
@@ -531,6 +532,7 @@ export function createPlugin() {
 			...threadMutationCollections,
 			...attachmentCollections,
 			...deliveryCollections,
+			providerDeliveries: { indexes: ["messageId"] },
 			messages: {
 				indexes: [
 					...mailboxMessageIndexes,
@@ -602,6 +604,10 @@ export function createPlugin() {
 		mcp: native.mcp,
 		routes: {
 			...native.routes,
+			"delivery-events/record": {
+				permission: "plugins:manage",
+				handler: async (ctx) => recordProviderEvent(ctx as any, ctx.input, options.deliveryEvents),
+			},
 			...bundleRoutes,
 			...bundleOperationRoutes,
 			"ui/preferences": { permission: "plugins:manage", handler: readInboxPreferences },
@@ -717,7 +723,7 @@ export function createPlugin() {
 					const rows = await loadThreadRows(routeCtx, threadId);
 					try { await mutateThread(routeCtx, threadId, doc => doc.read ? null : ({ read: true })); }
 					catch { routeCtx.log.warn("emdash-inbox: thread loaded but mark-read failed", { threadId }); }
-					const items = rows.map((r) => ({ id: r.id, data: publicMessage(r.data) }));
+					const items = await Promise.all(rows.map(async (r) => ({ id: r.id, data: { ...publicMessage(r.data), providerDelivery: await readProviderDelivery(routeCtx as any, r.data) } })));
 
 					return { items };
 				},

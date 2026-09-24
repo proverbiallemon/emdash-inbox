@@ -89,6 +89,16 @@ Sending routes and MCP tools accept an optional `requestId` (1–200 characters)
 
 Private `deliveries/list`, `deliveries/reconcile`, and `deliveries/resolve` routes require `plugins:manage`. The matching MCP tools are `list_deliveries`, `reconcile_deliveries`, and `resolve_delivery`. Listing is read-only; reconcile and resolve change stored state. Delivery summaries omit message bodies, BCC addresses, raw MIME, and private object keys. Refresh MCP consent after upgrades that change tool definitions.
 
+### Recipient delivery status
+
+To receive Cloudflare Email Sending results, register the descriptor with `emdashInboxPlugin({ deliveryEvents: { accountId, zoneId, domain } })`. Configure an Email Sending event subscription for that domain, targeting a Cloudflare Queue consumed by the host Worker. Subscribe to delivered, deferred, bounced, failed, rejected, and complained events.
+
+Inside the Worker queue handler, use EmDash's `withEmDashRuntime()` to invoke `runtime.handlePluginApiRoute("emdash-inbox", "POST", "/delivery-events/record", request)`, passing the event as the JSON request body. Acknowledge only successful processing; retry failures and configure a dead-letter queue. Preserve the host's existing fetch and scheduled handlers. See [Cloudflare event subscriptions](https://developers.cloudflare.com/email-service/platform/event-subscriptions/) and [EmDash runtime route invocation](https://docs.emdashcms.com/plugins/creating-plugins/api-routes/) for the host APIs.
+
+The plugin validates the configured account, zone, domain, and event schema. Writes are disabled without that configuration, and HTTP access to the route requires `plugins:manage`. Receipts are stored separately from the send journal and matched by provider Message-ID and recipient, including events that arrive before the sent message is stored. Duplicate and reordered receipts cannot regress a terminal result to a deferral; complaints remain visible. Receipt processing never sends, retries, or restores an email.
+
+Conversation messages and the Outbox display recipient results on refresh. **Delivered** means the recipient's server accepted the email; it does not confirm inbox placement or reading. Messages without receipts remain unconfirmed, including mail sent before tracking was enabled. Outbox summaries redact copied recipients and their SMTP responses.
+
 ### Email signatures
 
 Open **Mail settings → Email signature** to build a personal rich-text signature with fonts, sizes, text and highlight colors, bold/italic/underline, links, lists, and alignment. Upload a PNG, JPEG, GIF, or WebP logo; select it to set its description and width. Choose independently whether to include it in new messages and replies/reply all. Clear the editor and save to remove it. Each EmDash login has its own signature, even when users share the same sender address.

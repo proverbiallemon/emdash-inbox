@@ -26,7 +26,7 @@ export function TipTapEditor({ initialContent, onReady, label = "Message body" }
 	const editor = useEditor({
 		// Keep untouched quoted replies stable; an implicit trailing paragraph
 		// otherwise changes the saved snapshot on the first focus transaction.
-		extensions: [StarterKit.configure({ trailingNode: false, link: { openOnClick: false } }), TextStyleKit.configure({ lineHeight: false }), TextAlign.configure({ types: ["paragraph", "heading"], defaultAlignment: null }), InlineImage],
+		extensions: [StarterKit.configure({ trailingNode: false, link: { openOnClick: false, defaultProtocol: "https" } }), TextStyleKit.configure({ lineHeight: false }), TextAlign.configure({ types: ["paragraph", "heading"], defaultAlignment: null }), InlineImage],
 		content: sanitizeComposeHtml(initialContent),
 		editorProps: { attributes: { role: "textbox", "aria-label": label, "aria-multiline": "true" }, transformPastedHTML: sanitizeComposeHtml },
 	});

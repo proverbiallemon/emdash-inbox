@@ -189,6 +189,7 @@ export function ThreadView({ messageId, debug, onBack, onRead, onChanged, sender
 			<button type="button" onClick={onBack} className="text-sm underline hover:no-underline">
 				← Inbox
 			</button>
+			<button type="button" onClick={() => void loadThread(true)} className="ml-4 text-sm underline">Refresh delivery status</button>
 			{error && <div role="alert" className="p-3 rounded-lg border border-destructive/50 bg-destructive/5 text-sm text-destructive">{error}</div>}
 			{notice && <p role="status" className="dl-notice">{notice}</p>}
 			<ThreadHeader subject={subject} participants={participants} messageCount={thread.length}>
