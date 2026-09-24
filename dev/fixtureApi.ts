@@ -3,6 +3,13 @@ import { aggregateThreads } from "../src/lib/threadSummary";
 import type { MessageDoc } from "../src/index";
 import { BUNDLE_IDS, type BundleId } from "../src/lib/bundles";
 import type { InboxPreferences } from "../src/lib/uiPreferences";
+import { defaultSignature, isEmailSignature, type EmailSignature } from "../src/lib/signature";
+import { sanitizeComposeHtml } from "../src/lib/sanitize";
+let signature: EmailSignature = (() => {
+ try { const saved = JSON.parse(sessionStorage.getItem("daylight-preview-signature") ?? "null"); if (isEmailSignature(saved)) return saved; } catch { /* Start with an empty preview signature. */ }
+ return { ...defaultSignature };
+})();
+let senderAddress = "alex@example.com";
 let preferences: InboxPreferences = { navigation: "top", fullWindow: false, enabledBundles: [...BUNDLE_IDS], bundledInbox: true };
 const owner = "alex@example.com";
 const previewText = "A quieter kind of inbox\n\nOne place for the conversations that matter.\nBuilt around your own pace.\n\nThis attachment is a local preview fixture.";
@@ -91,6 +98,15 @@ export async function apiFetch(input: string | URL | Request, init?: RequestInit
   case 'bundles/done-status': {const op=operations.get(body.operationId);if(!op)return fixtureError('Operation not found',404);data=operationView(op);break;}
   case 'bundles/done-threads': {const op=operations.get(body.operationId);if(!op)return fixtureError('Operation not found',404);const all=withSender(aggregateThreads(rows,'all',owner));const start=Number(body.cursor??0);data={items:op.items.slice(start,start+25).map((item:any)=>({...item,summary:all.find(r=>r.threadId===item.threadId)??null})),hasMore:op.items.length>start+25,...(op.items.length>start+25?{cursor:String(start+25)}:{})};break;}
 
+  case "signature/get": data = { signature, canSave: true }; break;
+  case "signature/save": {
+   if (!isEmailSignature(body)) return fixtureError("Enter a signature of at most 10,000 characters and choose when to include it.");
+   signature = { text: body.text.replace(/\r\n?/g, "\n").trim(), newMessages: body.newMessages, replies: body.replies };
+   if (body.html !== undefined) signature.html = sanitizeComposeHtml(body.html);
+   sessionStorage.setItem("daylight-preview-signature", JSON.stringify(signature)); data = { signature }; break;
+  }
+  case "settings/get": data = { senderAddress, inboundSecretSet: true }; break;
+  case "settings/save": senderAddress = body.senderAddress; data = { ok: true }; break;
   case "ui/preferences": data = { preferences, userId:"daylight-preview-user", canSave:true, name:"Alex Morgan", senderAddress:owner }; break;
   case "ui/preferences-save": if(scenario==='settings-error'&&!scenarioUsed){scenarioUsed=true;return fixtureError("Could not save your bundle settings. Try again.");} preferences=body; data={preferences}; break;
   case "threads/list": data={items:withSender(aggregateThreads(rows,body.status??"inbox",owner)).filter(row=>!body.pinnedOnly||row.pinned),hasMore:false}; break;
@@ -122,4 +138,3 @@ export async function apiFetch(input: string | URL | Request, init?: RequestInit
  }
  return new Response(JSON.stringify({success:true,data}),{headers:{"Content-Type":"application/json"}});
 }
-

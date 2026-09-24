@@ -1,4 +1,6 @@
 import DOMPurify from "dompurify";
+import { safeMailStyle } from "./mailStyles";
+import { decodeSignatureImage } from "./signatureImage";
 
 const INLINE_URI = /^(?:cid:[^\s]+|data:image\/(?:png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+)$/i;
 const HTTP_URI = /^https?:/i;
@@ -17,13 +19,14 @@ const EMAIL_ALLOWED_TAGS = [
 const EMAIL_ALLOWED_ATTR = [
 	"href", "src", "alt", "title", "width", "height", "align", "valign", "border",
 	"cellpadding", "cellspacing", "colspan", "rowspan", "bgcolor", "color", "face",
-	"size", "dir", "lang", "start", "reversed", "scope",
+	"size", "dir", "lang", "start", "reversed", "scope", "style",
 ];
 
 /**
  * Sanitize HTML from an inbound email for safe rendering in the admin.
  *
- * Keeps structural formatting and table layout, with no source CSS, classes,
+ * Keeps structural formatting, table layout and strictly filtered typography.
+ * Removes resource-loading CSS, classes,
  * IDs, SVG, media, embedded documents, or responsive image sources. This
  * prevents network loading and source styles from affecting the admin page.
  * Only img.src may load a resource: raster data: and cid: images are kept;
@@ -31,7 +34,7 @@ const EMAIL_ALLOWED_ATTR = [
  * protocols. External http(s) links gain rel="noopener noreferrer nofollow".
  *
  * Returns a safe HTML string intended for dangerouslySetInnerHTML on a
- * plain <div>. Removing CSS intentionally sacrifices some email styling.
+ * plain <div>. Unsupported layout styles are intentionally discarded.
  */
 export function sanitizeEmailHtml(
 	raw: string,
@@ -50,6 +53,7 @@ export function prepareEmailHtml(
 	DOMPurify.removeAllHooks();
 
 	DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+		if (data.attrName === "style") { data.attrValue = safeMailStyle(data.attrValue); data.keepAttr = Boolean(data.attrValue); }
 		if (data.attrName === "src" && node.nodeName !== "IMG") {
 			data.keepAttr = false;
 		}
@@ -95,17 +99,17 @@ const COMPOSE_ALLOWED_TAGS = [
 	"p", "br", "strong", "b", "em", "i", "u", "s", "strike",
 	"ul", "ol", "li", "blockquote",
 	"h1", "h2", "h3", "h4", "h5", "h6",
-	"a", "code", "pre", "hr",
+	"a", "code", "pre", "hr", "span", "img",
 ];
 
-const COMPOSE_ALLOWED_ATTR = ["href", "class"];
+const COMPOSE_ALLOWED_ATTR = ["href", "style", "src", "alt", "title", "width", "height"];
 
 /**
- * Sanitize HTML produced by the in-app compose editor (TipTap StarterKit) for
+ * Sanitize HTML produced by the in-app rich-text editor for
  * outbound email send. Different priorities from sanitizeEmailHtml:
- *   - Aggressive allowlist: only TipTap StarterKit's element set survives.
- *   - <img> is stripped unconditionally (StarterKit doesn't emit images;
- *     this catches pasted HTML).
+ *   - Only supported editor elements and safe typography survive.
+ *   - Only validated, size-limited raster data images survive; remote images
+ *     and other image formats are removed, including from pasted HTML.
  *   - External http(s) <a> links gain rel="noopener noreferrer nofollow".
  *   - mailto: and other schemes left alone.
  *   - DOMPurify defaults handle scripts, event handlers, and dangerous
@@ -119,7 +123,15 @@ export function sanitizeComposeHtml(raw: string): string {
 
 	DOMPurify.removeAllHooks();
 
+	DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+		if (data.attrName === "style") { data.attrValue = safeMailStyle(data.attrValue); data.keepAttr = Boolean(data.attrValue); }
+	});
 	DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+		if (node.nodeName === "IMG") {
+			let safe = false;
+			try { safe = Boolean(decodeSignatureImage((node as Element).getAttribute("src") ?? "")); } catch { /* Invalid uploads are never rendered. */ }
+			if (!safe) node.parentNode?.removeChild(node);
+		}
 		if (node.nodeName === "A") {
 			const href = (node as Element).getAttribute("href") ?? "";
 			if (HTTP_URI.test(href)) {
@@ -128,15 +140,11 @@ export function sanitizeComposeHtml(raw: string): string {
 		}
 	});
 
-	// Pre-strip <img> tags. DOMPurify's KEEP_CONTENT clone-and-reinsert path
-	// has a quirk with adjacent same-tag elements (the second img in
-	// `<img src="..."><img src="data:...">` survives even FORBID_TAGS in the
-	// happy-dom test environment). Removing them up front sidesteps it.
-	const stripped = raw.replace(/<img\b[^>]*>/gi, "");
-
-	const out = DOMPurify.sanitize(stripped, {
+	const out = DOMPurify.sanitize(raw, {
 		ALLOWED_TAGS: COMPOSE_ALLOWED_TAGS,
 		ALLOWED_ATTR: COMPOSE_ALLOWED_ATTR,
+		ALLOW_DATA_ATTR: false,
+		ALLOW_ARIA_ATTR: false,
 	});
 	DOMPurify.removeAllHooks();
 	return out;

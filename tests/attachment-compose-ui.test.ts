@@ -5,6 +5,10 @@ import { ComposeView } from "../src/components/ComposeView";
 import { ReplyCompose } from "../src/components/ReplyCompose";
 import { AttachmentDownloads } from "../src/components/AttachmentDownloads";
 
+// These scenarios have no saved signature. Signature HTTP behavior is covered
+// with the real editor and API client in signature-ui.test.tsx.
+vi.mock("../src/lib/signatureClient", () => ({ getSignature: async () => ({ signature: { text: "", newMessages: true, replies: true }, canSave: true }) }));
+
 // The editor is an external rich-text dependency. Keep its stable interface;
 // exercise the real compose controls, native API wrapper, and async lifecycle.
 vi.mock("../src/components/TipTapEditor", () => ({

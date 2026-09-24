@@ -50,6 +50,30 @@ describe("durable delivery through native SQLite routes", () => {
 		expect((await host.messages.query({})).items).toHaveLength(1);
 	});
 
+	it("delivers formatted signatures with inline logos while retaining the original draft and replay key", async () => {
+		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+		const html = `<p>Hello</p><p><span style="font-family:Georgia;color:#245be0">Alex</span><img src="data:image/png;base64,${png}" alt="Studio" width="160"></p>`;
+		const saved = await host.request("messages/draft-save", { to: "reader@example.com", subject: "Rich signature", text: "Hello\nAlex", html });
+		expect(saved.success, JSON.stringify(saved)).toBe(true);
+		const draftId = (saved.data as { draftId: string }).draftId;
+		expect(await host.messages.get(draftId)).toMatchObject({ bodyHtml: html, status: "draft" });
+		const input = { draftId, requestId: "inline-logo-send" };
+		const sent = await host.request("messages/draft-send", input);
+		expect(sent.success, JSON.stringify(sent)).toBe(true);
+		expect(sent.data).toMatchObject({ deliveryStatus: "sent" });
+		const payload = transport.send.mock.calls[0][0];
+		expect(payload.attachments).toHaveLength(1);
+		const logo = payload.attachments[0];
+		expect(logo).toMatchObject({ disposition: "inline", type: "image/png", filename: "signature-1.png" });
+		expect(Buffer.from(logo.content).toString("base64")).toBe(png);
+		expect(payload.html).toContain(`src="cid:${logo.contentId}"`);
+		expect(payload.html).toContain('style="font-family:Georgia;color:#245be0"');
+		expect(payload.html).not.toContain("data:image");
+		expect(await host.messages.get(draftId)).toMatchObject({ bodyHtml: html, status: "done" });
+		expect((await host.request("messages/draft-send", input)).data).toEqual(sent.data);
+		expect(transport.send).toHaveBeenCalledOnce();
+	});
+
 	it("keeps unknown outcomes locked and never retries until an acknowledged restore and a new request", async () => {
 		const draftId = await savedDraft();
 		const input = { draftId, requestId: "unknown-attempt", edits: { text: "Latest unsaved edit" } };

@@ -31,6 +31,8 @@ import { listDeliveriesInput, resolveDeliveryInput } from "./lib/inboxMcpTools";
 import { normalizeMessageId, replyReferences } from "./lib/messageIdentity";
 import { VERSION } from "./version";
 import { readInboxPreferences, saveInboxPreferences } from "./lib/uiPreferences";
+import { readSignature, saveSignature } from "./lib/signatureSettings";
+import { embedInlineImages } from "./lib/inlineImages";
 import { requireMailboxReady, MailboxInputError, mailboxCollections, mailboxMessageIndexes, allRows, loadThreadRows, putMessage, mutateMessage, mutateThread, ensureMailboxIndex, listThreadPage, searchMessagePage, wakeSnoozed } from "./lib/mailboxStore";
 import { attachmentCollections, AttachmentError, type StoredAttachment, publicMessage, uploadDraftAttachment, removeDraftAttachment, readAttachment, storeInboundFiles, prepareOutgoingAttachments, retryAttachmentCleanup, decodeBase64, MAX_INBOUND_BYTES, MAX_BODY_BYTES } from "./lib/attachments";
 
@@ -401,6 +403,12 @@ async function deliverEmail(
 	if (event.message.cc?.length) payload.cc = event.message.cc;
 	if (event.message.bcc?.length) payload.bcc = event.message.bcc;
 	const attachments = await prepareOutgoingAttachments(ctx, event.message.attachments, event.message.text, event.message.html);
+	const inline = await embedInlineImages(event.message.html);
+	if (inline.attachments.length) {
+		if (attachments.length + inline.attachments.length > 32) throw new AttachmentError("bad_request", "At most 32 attachments and inline images are supported.");
+		payload.html = inline.html;
+		attachments.push(...inline.attachments);
+	}
 	if (attachments.length) payload.attachments = attachments;
 	let references: string[] = [];
 	const parentId = normalizeMessageId(event.message.inReplyTo);
@@ -598,6 +606,8 @@ export function createPlugin() {
 			...bundleOperationRoutes,
 			"ui/preferences": { permission: "plugins:manage", handler: readInboxPreferences },
 			"ui/preferences-save": { permission: "plugins:manage", handler: saveInboxPreferences },
+			"signature/get": { permission: "plugins:manage", handler: readSignature },
+			"signature/save": { permission: "plugins:manage", handler: saveSignature },
 			"messages/search": {
 				permission: "plugins:manage",
 				handler: async (ctx) => {
