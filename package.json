@@ -1,6 +1,6 @@
 {
 	"name": "emdash-inbox",
-	"version": "0.10.0",
+	"version": "0.11.0",
 	"description": "Inbox-by-Google-style mailbox UI for EmDash CMS, with Cloudflare Email Service transport built in",
 	"keywords": [
 		"emdash",
@@ -56,14 +56,14 @@
 		"dev:preview": "vite --config dev/vite.config.ts"
 	},
 	"peerDependencies": {
-		"emdash": "^0.38.0",
+		"emdash": "^1.0.1",
 		"react": "^19"
 	},
 	"devDependencies": {
 		"@types/react": "^19",
 		"@types/react-dom": "19",
 		"@types/sanitize-html": "^2.16.1",
-		"emdash": "^0.38.0",
+		"emdash": "1.0.1",
 		"jsdom": "^30.0.1",
 		"kysely": "^0.29.0",
 		"react": "^19",

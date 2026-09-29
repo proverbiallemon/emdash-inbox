@@ -114,6 +114,8 @@ export interface MessageDoc {
 	/** M8. BCC recipients. Absent on pre-M8 rows; never rendered in thread
 	 *  views of received copies (only stored on our own outbound rows). */
 	bcc?: string[];
+	/** Reply address supplied by a host plugin through EmDash's email service. */
+	replyTo?: string;
 	subject: string;
 	bodyText: string;
 	bodyHtml: string | null;
@@ -403,6 +405,7 @@ async function deliverEmail(
 	if (event.message.html) payload.html = event.message.html;
 	if (event.message.cc?.length) payload.cc = event.message.cc;
 	if (event.message.bcc?.length) payload.bcc = event.message.bcc;
+	if (event.message.replyTo) payload.replyTo = event.message.replyTo;
 	const attachments = await prepareOutgoingAttachments(ctx, event.message.attachments, event.message.text, event.message.html);
 	const inline = await embedInlineImages(event.message.html);
 	if (inline.attachments.length) {
@@ -433,6 +436,7 @@ async function deliverEmail(
 		direction: "outbound", from: senderAddress,
 		to: event.message.to, toAll: event.message.toAll ?? [event.message.to],
 		cc: event.message.cc ?? [], bcc: event.message.bcc ?? [],
+		...(event.message.replyTo ? { replyTo: event.message.replyTo } : {}),
 		subject: event.message.subject, bodyText: event.message.text, bodyHtml: event.message.html ?? null,
 		bodyRaw: null, attachments: event.message.attachments ?? [], references,
 		inReplyTo: parentId, threadId: parentId ? parent?.threadId ?? parentId : null,
@@ -516,11 +520,6 @@ export function createPlugin(options: { deliveryEvents?: DeliveryEventScope } = 
 		version: VERSION,
 
 		capabilities: [
-			"email:provide",
-			"email:intercept",
-			// EmDash 0.14+ gates email hook registration behind these explicit
-			// capabilities. email:deliver needs hooks.email-transport:register;
-			// email:afterSend needs hooks.email-events:register.
 			"hooks.email-transport:register",
 			"hooks.email-events:register",
 		],

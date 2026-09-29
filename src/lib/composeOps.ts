@@ -66,6 +66,7 @@ export type Deliver = (
 			toAll?: string[];
 			cc?: string[];
 			bcc?: string[];
+			replyTo?: string;
 			subject: string;
 			text: string;
 			html?: string;
@@ -359,6 +360,7 @@ export async function draftSend(
 		message: {
 			to: to[0], toAll: to, cc, bcc, subject, text, html,
 			...(draft.inReplyTo ? { inReplyTo: draft.inReplyTo } : {}),
+			...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
 			...(draft.attachments?.length ? { attachments: draft.attachments } : {}),
 		},
 		source: draft.inReplyTo ? "emdash-inbox:reply" : "emdash-inbox:compose",

@@ -139,6 +139,7 @@ function comparableSnapshot(message: MessageDoc): unknown {
 	// metadata do not make an untouched restored draft look edited.
 	return {
 		from: message.from, to: message.to, toAll: message.toAll, cc: message.cc, bcc: message.bcc,
+		replyTo: message.replyTo,
 		subject: message.subject, bodyText: message.bodyText, bodyHtml: message.bodyHtml,
 		attachments: message.attachments, inReplyTo: message.inReplyTo, references: message.references,
 	};

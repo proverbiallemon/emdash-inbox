@@ -39,6 +39,42 @@ describe("EmDash native host", () => {
 		});
 	}
 
+	it("preserves host-provided CC and Reply-To in transport and the durable Sent record", async () => {
+		const hooks = new HookPipeline(host.manager.getActivePlugins(), { db: host.db });
+		hooks.setExclusiveSelection("email:deliver", host.plugin.id);
+		const delivered = await hooks.invokeExclusiveHook("email:deliver", {
+			message: {
+				to: "recipient@example.com", cc: ["copy@example.com"], replyTo: "visitor@example.com",
+				subject: "Contact reply address", text: "Reply to the visitor",
+			},
+			source: "forms",
+		});
+		expect(delivered?.error).toBeUndefined();
+		expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
+			to: "recipient@example.com", cc: ["copy@example.com"], replyTo: "visitor@example.com",
+		}));
+		const sent = (await host.messages.query({ where: { status: "done" } })).items;
+		expect(sent).toHaveLength(1);
+		expect(sent[0].data).toMatchObject({ cc: ["copy@example.com"], replyTo: "visitor@example.com" });
+	});
+
+	it("keeps a host Reply-To when a rejected email is sent from its recovery draft", async () => {
+		transport.send.mockRejectedValueOnce(Object.assign(new Error("Rejected"), { code: "E_RATE_LIMIT_EXCEEDED" }));
+		const hooks = new HookPipeline(host.manager.getActivePlugins(), { db: host.db });
+		hooks.setExclusiveSelection("email:deliver", host.plugin.id);
+		await hooks.invokeExclusiveHook("email:deliver", {
+			message: { to: "recipient@example.com", replyTo: "visitor@example.com", subject: "Retry contact", text: "Reply to visitor" },
+			source: "forms",
+		});
+		const drafts = (await host.messages.query({ where: { status: "draft" } })).items;
+		expect(drafts).toHaveLength(1);
+		const sent = await host.request("messages/draft-send", { draftId: drafts[0].id, requestId: "retry-host-email" });
+		expect(sent.success, JSON.stringify(sent)).toBe(true);
+		expect(sent.data).toMatchObject({ deliveryStatus: "sent" });
+		expect(transport.send).toHaveBeenLastCalledWith(expect.objectContaining({ replyTo: "visitor@example.com" }));
+		expect(await host.messages.get(drafts[0].id)).toMatchObject({ status: "done", replyTo: "visitor@example.com" });
+	});
+
 	it("does not report a core email hook failure after provider acceptance when sent projection fails", async () => {
 		const write = PluginStorageRepository.prototype.compareAndSet;
 		vi.spyOn(PluginStorageRepository.prototype, "compareAndSet").mockImplementation(async function (
