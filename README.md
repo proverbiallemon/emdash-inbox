@@ -8,7 +8,7 @@ Outbound goes through the native Cloudflare Email Sending Workers binding — no
 
 ## Status
 
-**Pre-alpha (v0.11.0, development).** Inbound/outbound mail, complete conversation pagination, pin / snooze / done, read state, compose/reply-all with CC/BCC, drafts, private attachments, settings, rich-text signatures with inline logos, durable send recovery, recipient delivery status, and 20 native MCP tools are implemented. Undo remains planned.
+**Pre-alpha (v0.11.1, development).** Inbound/outbound mail, complete conversation pagination, pin / snooze / done, read state, compose/reply-all with CC/BCC, drafts, private attachments, settings, rich-text signatures with inline logos, durable send recovery, recipient delivery status, and 20 native MCP tools are implemented. Undo remains planned.
 
 Requires **EmDash 1.x**, tested against **1.0.1** with `@emdash-cms/cloudflare` **1.0.1**. The mailbox uses resumable indexing and revision-checked writes. EmDash caps each storage query at 100 rows; complete operations now follow continuations. See [private attachments and pagination](#private-attachments-and-pagination) for setup and limits.
 
@@ -26,7 +26,7 @@ As of EmDash 1.0.1, the Cloudflare adapter ships a first-party `cloudflare-email
 
 ## Upgrading to EmDash 1.0
 
-Update `emdash` and `@emdash-cms/cloudflare` together to **1.0.1**, then rebuild the site with Inbox **0.11.0**. Follow the [EmDash upgrade guide](https://docs.emdashcms.com/upgrade-to-v1/) and back up the host database before applying core migrations. Inbox retains its existing plugin identity, storage, settings, and MCP tool names.
+Update `emdash` and `@emdash-cms/cloudflare` together to **1.0.1**, then rebuild the site with Inbox **0.11.1**. Follow the [EmDash upgrade guide](https://docs.emdashcms.com/upgrade-to-v1/) and back up the host database before applying core migrations. Inbox retains its existing plugin identity, storage, settings, and MCP tool names.
 
 The provider forwards EmDash's optional `cc` and `replyTo` fields and preserves the reply address in Sent and recovery drafts. Native integration tests pin EmDash to 1.0.1 because the migration executor and MCP HTTP adapter they exercise are explicitly internal APIs.
 
@@ -104,6 +104,8 @@ Inside the Worker queue handler, use EmDash's `withEmDashRuntime()` to invoke `r
 The plugin validates the configured account, zone, domain, and event schema. Writes are disabled without that configuration, and HTTP access to the route requires `plugins:manage`. Receipts are stored separately from the send journal and matched by provider Message-ID and recipient, including events that arrive before the sent message is stored. Duplicate and reordered receipts cannot regress a terminal result to a deferral; complaints remain visible. Receipt processing never sends, retries, or restores an email.
 
 Conversation messages and the Outbox display recipient results on refresh. **Delivered** means the recipient's server accepted the email; it does not confirm inbox placement or reading. Messages without receipts remain unconfirmed, including mail sent before tracking was enabled. Outbox summaries redact copied recipients and their SMTP responses.
+
+**No delivery receipt** does not imply failure or guarantee that a receipt will arrive. Cloudflare excludes Email Routing deliveries, including sends to verified forwarding destinations, from Email Sending events. An email to a verified destination can arrive successfully without producing a delivery badge. Test event tracking with an address you control that is not a verified routing destination. Do not remove forwarding verification or resend mail merely to obtain a receipt.
 
 ### Email signatures
 
