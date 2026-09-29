@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-28
+
+### Changed
+
+- Require EmDash 1.0.1 or newer within 1.x; pin native host integration tests to 1.0.1.
+- Use the current email-hook capabilities without deprecated aliases.
+- Update native migration and MCP integration fixtures for the 1.0 internal entry points and site-transfer write checks.
+
+### Fixed
+
+- Preserve the host email service's Reply-To address in Cloudflare delivery, Sent records, and recovery drafts. CC continues to pass through unchanged.
+
 ### Added
 
 - Durable Outbox and send journal: locked snapshots survive interrupted requests,

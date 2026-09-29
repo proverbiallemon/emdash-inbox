@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { Kysely } from "kysely";
 import { OptionsRepository, PluginManager, PluginStorageRepository, type Database } from "emdash";
 import { createDialect } from "emdash/db/sqlite";
-import { createMigrationExecutor } from "emdash/db/sqlite-migrations";
+// These native integration tests intentionally exercise the pinned host's internals.
+// @emdash-cms/plugin-test currently targets sandboxed plugins, not native plugins.
+import { createMigrationExecutor } from "emdash/internal/db/sqlite-migrations";
 import { getCoreMigrationIdentity } from "emdash/migrations";
 import { createPlugin, type MessageDoc } from "../../src/index";
 

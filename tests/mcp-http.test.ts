@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GET, POST } from "emdash/routes/api/mcp";
+import { GET, POST } from "emdash/internal/routes/api/mcp";
 import { createNativeHost } from "./helpers/nativeHost";
 
 /**
@@ -31,6 +31,7 @@ describe("published EmDash MCP HTTP adapter", () => {
 			user,
 			tokenScopes: auth.scopes ?? ["mcp:tools:emdash-inbox"],
 			emdash: {
+				db: host.db,
 				async getEnabledPluginMcpTools() {
 					return Object.entries(host.plugin.mcp!.tools).map(([name, tool]) => ({
 						pluginId: host.plugin.id, name, description: tool.description, route: tool.route,

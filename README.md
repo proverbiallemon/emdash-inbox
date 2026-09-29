@@ -8,9 +8,9 @@ Outbound goes through the native Cloudflare Email Sending Workers binding — no
 
 ## Status
 
-**Pre-alpha (v0.10.0, development).** Inbound/outbound mail, complete conversation pagination, pin / snooze / done, read state, compose/reply-all with CC/BCC, drafts, private attachments, settings, durable send recovery, and 20 native MCP tools are implemented. Signatures and undo remain planned.
+**Pre-alpha (v0.11.0, development).** Inbound/outbound mail, complete conversation pagination, pin / snooze / done, read state, compose/reply-all with CC/BCC, drafts, private attachments, settings, rich-text signatures with inline logos, durable send recovery, recipient delivery status, and 20 native MCP tools are implemented. Undo remains planned.
 
-Requires **EmDash 0.38.x**, tested against **0.38.0**. The mailbox uses resumable indexing and revision-checked writes. EmDash caps each storage query at 100 rows; complete operations now follow continuations. See [private attachments and pagination](#private-attachments-and-pagination) for setup and limits.
+Requires **EmDash 1.x**, tested against **1.0.1** with `@emdash-cms/cloudflare` **1.0.1**. The mailbox uses resumable indexing and revision-checked writes. EmDash caps each storage query at 100 rows; complete operations now follow continuations. See [private attachments and pagination](#private-attachments-and-pagination) for setup and limits.
 
 ## Why this exists
 
@@ -20,9 +20,15 @@ EmDash (Cloudflare's WordPress successor, released April 2026) ships with a plug
 
 ### Relationship to `@emdash-cms/cloudflare`'s `cloudflare-email` plugin
 
-As of EmDash 0.38.0, the Cloudflare adapter ships a first-party `cloudflare-email` provider plugin. It is send-only: it forwards messages to the `send_email` binding and stops there — no mailbox, no inbound path, no threading headers, no record of what was sent. If all you need is "magic links get delivered," use it and skip this plugin entirely.
+As of EmDash 1.0.1, the Cloudflare adapter ships a first-party `cloudflare-email` provider plugin. It is send-only: it forwards messages to the `send_email` binding and stops there — no mailbox, no inbound path, no threading headers, no record of what was sent. If all you need is "magic links get delivered," use it and skip this plugin entirely.
 
 `emdash-inbox` replaces it rather than stacking on top of it. EmDash routes all outbound mail through a single exclusive `email:deliver` provider, and this plugin records messages inside that hook — it is the only point in the pipeline where every outbound message (including system mail, which skips the observer hooks) can be captured. Practical consequence: **if both plugins are installed, select `emdash-inbox` under Settings → Email.** With `cloudflare-email` selected instead, mail still sends, but outbound messages never appear in the inbox.
+
+## Upgrading to EmDash 1.0
+
+Update `emdash` and `@emdash-cms/cloudflare` together to **1.0.1**, then rebuild the site with Inbox **0.11.0**. Follow the [EmDash upgrade guide](https://docs.emdashcms.com/upgrade-to-v1/) and back up the host database before applying core migrations. Inbox retains its existing plugin identity, storage, settings, and MCP tool names.
+
+The provider forwards EmDash's optional `cc` and `replyTo` fields and preserves the reply address in Sent and recovery drafts. Native integration tests pin EmDash to 1.0.1 because the migration executor and MCP HTTP adapter they exercise are explicitly internal APIs.
 
 ## Operator setup
 
@@ -107,7 +113,7 @@ The signature appears in the editor before you send, above quoted text in replie
 
 ### Troubleshooting
 
-- **`No email provider configured` / `EMAIL_NOT_CONFIGURED` after install.** Tail the host worker (`wrangler tail`) and look for `[hooks] Plugin "emdash-inbox" declares email:deliver hook without hooks.email-transport:register capability — skipping`. That message means your host is on EmDash 0.14+ and is bundling an older `definePlugin` from `emdash-inbox`'s nested `node_modules`. Make sure `emdash-inbox`'s `devDependencies.emdash` matches your host's installed version (≥0.14) and rebuild the plugin with `pnpm install && pnpm build`. This development version requires EmDash 0.38.x.
+- **`No email provider configured` / `EMAIL_NOT_CONFIGURED` after install.** Tail the host worker (`wrangler tail`) and look for `[hooks] Plugin "emdash-inbox" declares email:deliver hook without hooks.email-transport:register capability — skipping`. That message means your host is on EmDash 0.14+ and is bundling an older `definePlugin` from `emdash-inbox`'s nested `node_modules`. Make sure `emdash-inbox`'s `devDependencies.emdash` matches your host's installed version (≥0.14) and rebuild the plugin with `pnpm install && pnpm build`. This development version requires EmDash 1.0.1 or newer within 1.x.
 - **Magic-link URL contains `localhost:4321`.** EmDash stores the base URL under the `emdash:site_url` option in the database, set during initial setup. Setting `SITE_URL` in `wrangler.jsonc` afterwards does not back-fill that row. Update it directly: `wrangler d1 execute <db> --remote --command "UPDATE options SET value='\"https://your.domain\"' WHERE name='emdash:site_url';"`
 - **Inbox admin page or `messages/*` routes return 403 for some users.** Since EmDash 0.28.1, every private plugin route requires the `plugins:manage` permission (and the `X-EmDash-Request` header) on all HTTP methods, including reads. Users below that permission tier — e.g. editors — can no longer reach the inbox API. Grant the role `plugins:manage` or have an administrator use the inbox.
 - **A Proton test reaches Proton but not Inbox.** Proton may deliver internally between addresses hosted in the same account, bypassing Cloudflare MX and the ingest worker. Use a sender that traverses the external SMTP route. Confirm both delivery paths in the worker logs.

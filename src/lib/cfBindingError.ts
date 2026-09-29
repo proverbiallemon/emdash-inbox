@@ -6,7 +6,7 @@
  * cc/bcc/replyTo, attachments, and headers; returns { messageId } on success.
  *
  * Narrowed here to what `deliverEmail()` actually uses. If we extend our
- * use later (attachments, replyTo), expand this type rather than relaxing
+ * use later, expand this type rather than relaxing
  * to Record<string, unknown>.
  */
 export interface EmailAttachment {
@@ -28,6 +28,7 @@ export interface EmailBinding {
 		html?: string;
 		cc?: string[];
 		bcc?: string[];
+		replyTo?: string;
 		headers?: Record<string, string>;
 		attachments?: EmailAttachment[];
 	}): Promise<{ messageId?: string }>;
